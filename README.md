@@ -7,6 +7,14 @@ a SER/AVI/FITS capture, and it picks the sharpest frames, aligns them,
 stacks them, sharpens the result, and lets you fine-tune color and color
 fringing before you export a PNG.
 
+## Screenshot
+
+![FTYS](FTYS-screenshot.jpg)
+
+## Made with Claude
+
+Made with Claude Sonnet 5 High
+
 ## Build (Linux)
 
 ```
