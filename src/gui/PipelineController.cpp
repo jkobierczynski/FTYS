@@ -35,8 +35,10 @@ constexpr int kAlignPatchSizeMax = 256;
 // support more independent points, and a very soft/small one may need
 // fewer to avoid crowding.
 constexpr int kDefaultAlignMaxPoints = 12;
-constexpr int kAlignMaxPointsMin = 4;
-constexpr int kAlignMaxPointsMax = 40;
+// Min/max bounds now live as PipelineController::kAlignMaxPointsMin/Max
+// (public, in the header) so the GUI's "Number of boxes" spin box and the
+// Alignment Point Inspector's manual add/delete mode share the exact same
+// limit instead of each hardcoding their own.
 // Default/range for robustifyPointShifts' maxDeviationPx -- the per-frame
 // "sigma clip" style rejection of a point whose shift deviates too far from
 // that frame's consensus. 12px was the value used throughout this
@@ -159,6 +161,44 @@ void PipelineController::setAlignMaxPoints(int maxPoints) {
     alignMaxPoints_ = std::clamp(maxPoints, kAlignMaxPointsMin, kAlignMaxPointsMax);
 }
 
+void PipelineController::trackPoints(const std::vector<AlignmentPoint>& points, int patchSize, double maxDeviationPx) {
+    ImageBuffer refLum = selectedFrameCache_[referencePos_].luminance();
+
+    alignment_.points = points;
+    alignment_.width = refLum.width();
+    alignment_.height = refLum.height();
+    alignment_.perFramePointShifts.assign(selectedIndices_.size(), {});
+
+    double confSum = 0.0;
+    size_t confCount = 0;
+    for (size_t pos = 0; pos < selectedIndices_.size(); ++pos) {
+        std::vector<Transform2D> pointShifts;
+        pointShifts.reserve(points.size());
+        if (pos == referencePos_) {
+            // The reference against itself: identity everywhere, full
+            // confidence.
+            pointShifts.assign(points.size(), Transform2D{0.0, 0.0, 1.0});
+        } else {
+            ImageBuffer tgtLum = selectedFrameCache_[pos].luminance();
+            Point2D tgtCenter = detectObjectCenter(tgtLum, 0.15f);
+            Point2D recenterOffset{tgtCenter.x - referenceCenter_.x, tgtCenter.y - referenceCenter_.y};
+            for (const auto& pt : points)
+                pointShifts.push_back(estimateLocalShift(refLum, tgtLum, pt, patchSize, recenterOffset,
+                                                          kAlignAxisSharpnessThreshold));
+            robustifyPointShifts(pointShifts, maxDeviationPx);
+        }
+        for (const auto& t : pointShifts) { confSum += t.confidence; ++confCount; }
+        alignment_.perFramePointShifts[pos] = std::move(pointShifts);
+
+        if (!selectedIndices_.empty() && (pos % std::max<size_t>(1, selectedIndices_.size() / 100) == 0))
+            emit alignProgress(static_cast<int>(100.0 * (pos + 1) / selectedIndices_.size()));
+    }
+    emit alignProgress(100);
+    alignment_.blendWeights = computeBlendWeights(points, alignment_.width, alignment_.height);
+    alignment_.patchSize = patchSize;
+    alignment_.averageConfidence = confCount > 0 ? confSum / confCount : 0.0;
+}
+
 void PipelineController::setAlignMaxDeviation(double maxDeviationPx) {
     alignMaxDeviationPx_ = std::clamp(maxDeviationPx, kAlignMaxDeviationMin, kAlignMaxDeviationMax);
 }
@@ -196,6 +236,7 @@ void PipelineController::alignSelected() {
                 if (score > bestScore) { bestScore = score; bestPos = pos; }
             }
             referenceIndex_ = selectedIndices_[bestPos];
+            referencePos_ = bestPos;
 
             ImageBuffer refLum = selectedFrameCache_[bestPos].luminance();
 
@@ -210,48 +251,47 @@ void PipelineController::alignSelected() {
             // every local feature actually agreed on. Small patches
             // centered on real contrast correlate far more reliably.
             Roi roi = detectObjectRoi(refLum, 0.15f, 20);
-            alignment_ = MultiPointAlignmentResult{};
-            alignment_.points = selectAlignmentPoints(refLum, roi, maxPoints, patchSize, minSpacing);
-            alignment_.width = refLum.width();
-            alignment_.height = refLum.height();
-            alignment_.perFramePointShifts.assign(selectedIndices_.size(), {});
+            std::vector<AlignmentPoint> points = selectAlignmentPoints(refLum, roi, maxPoints, patchSize, minSpacing);
 
             // The reference frame's own gross object-center position.
             // Every other frame's center gets compared against this to
             // find that frame's bulk translation *before* any per-point
             // patch correlation runs -- see estimateLocalShift's header
             // comment (MultiPointAlignment.h) for why this ordering
-            // matters.
-            Point2D refCenter = detectObjectCenter(refLum, 0.15f);
+            // matters. Cached on the controller (not just a local) so a
+            // later manual re-track (realignWithPoints()) can reuse it
+            // without recomputing.
+            referenceCenter_ = detectObjectCenter(refLum, 0.15f);
 
-            double confSum = 0.0;
-            size_t confCount = 0;
-            for (size_t pos = 0; pos < selectedIndices_.size(); ++pos) {
-                std::vector<Transform2D> pointShifts;
-                pointShifts.reserve(alignment_.points.size());
-                if (pos == bestPos) {
-                    // The reference against itself: identity everywhere,
-                    // full confidence.
-                    pointShifts.assign(alignment_.points.size(), Transform2D{0.0, 0.0, 1.0});
-                } else {
-                    ImageBuffer tgtLum = selectedFrameCache_[pos].luminance();
-                    Point2D tgtCenter = detectObjectCenter(tgtLum, 0.15f);
-                    Point2D recenterOffset{tgtCenter.x - refCenter.x, tgtCenter.y - refCenter.y};
-                    for (const auto& pt : alignment_.points)
-                        pointShifts.push_back(estimateLocalShift(refLum, tgtLum, pt, patchSize, recenterOffset,
-                                                                  kAlignAxisSharpnessThreshold));
-                    robustifyPointShifts(pointShifts, maxDeviationPx);
-                }
-                for (const auto& t : pointShifts) { confSum += t.confidence; ++confCount; }
-                alignment_.perFramePointShifts[pos] = std::move(pointShifts);
+            alignment_ = MultiPointAlignmentResult{};
+            trackPoints(points, patchSize, maxDeviationPx);
+            emit alignDone(alignment_.averageConfidence);
+        } catch (const std::exception& e) {
+            emit errorOccurred(QString::fromStdString(e.what()));
+        }
+    });
+}
 
-                if (!selectedIndices_.empty() && (pos % std::max<size_t>(1, selectedIndices_.size() / 100) == 0))
-                    emit alignProgress(static_cast<int>(100.0 * (pos + 1) / selectedIndices_.size()));
-            }
-            emit alignProgress(100);
-            alignment_.blendWeights = computeBlendWeights(alignment_.points, alignment_.width, alignment_.height);
-            alignment_.patchSize = patchSize;
-            alignment_.averageConfidence = confCount > 0 ? confSum / confCount : 0.0;
+void PipelineController::realignWithPoints(const std::vector<AlignmentPoint>& points) {
+    if (selectedFrameCache_.empty()) {
+        emit errorOccurred("Run \"Align Selected Frames\" at least once before editing boxes manually");
+        return;
+    }
+    if (points.empty()) {
+        emit errorOccurred("At least one alignment box is required");
+        return;
+    }
+    if (static_cast<int>(points.size()) > kAlignMaxPointsMax) {
+        emit errorOccurred(QString("Too many alignment boxes (max %1)").arg(kAlignMaxPointsMax));
+        return;
+    }
+
+    const int patchSize = alignPatchSize_;
+    const double maxDeviationPx = alignMaxDeviationPx_;
+
+    (void)QtConcurrent::run([this, points, patchSize, maxDeviationPx]() {
+        try {
+            trackPoints(points, patchSize, maxDeviationPx);
             emit alignDone(alignment_.averageConfidence);
         } catch (const std::exception& e) {
             emit errorOccurred(QString::fromStdString(e.what()));

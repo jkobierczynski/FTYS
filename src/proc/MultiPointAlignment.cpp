@@ -203,6 +203,7 @@ void robustifyPointShifts(std::vector<Transform2D>& pointShifts, double maxDevia
         if (t.confidence < minConfidence || dev > maxDeviationPx) {
             t.dx = consensusDx;
             t.dy = consensusDy;
+            t.clipped = true;
             // Leave confidence as-is: it still honestly reports that this
             // particular point's own correlation was unreliable, even
             // though its shift now falls back to the consensus.

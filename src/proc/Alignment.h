@@ -8,6 +8,17 @@ struct Transform2D {
     double dx = 0.0;         // shift applied when resampling (see applyShift)
     double dy = 0.0;
     double confidence = 0.0; // normalized correlation peak height, roughly in [0,1]
+    // Set by robustifyPointShifts() (MultiPointAlignment.h) when this
+    // point's own measured shift was replaced by the frame's consensus --
+    // either its confidence fell below the floor, or its own shift
+    // deviated too far from what its neighbors agreed on ("sigma clip").
+    // Surfaced by the Alignment Point Inspector so a clipped box is drawn
+    // in red for that frame rather than the usual yellow, showing at a
+    // glance which boxes weren't trusted on their own. Left false for a
+    // fresh, non-robustified shift (e.g. the reference frame's own
+    // identity shift, or any caller that doesn't call
+    // robustifyPointShifts at all).
+    bool clipped = false;
 };
 
 // FFT-based phase correlation between `reference` and `target` (both mono

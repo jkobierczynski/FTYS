@@ -1,6 +1,7 @@
 #include "gui/PreviewWidget.h"
 
 #include <QWheelEvent>
+#include <QMouseEvent>
 #include <QPixmap>
 
 namespace ls {
@@ -30,6 +31,41 @@ void PreviewWidget::wheelEvent(QWheelEvent* event) {
     double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
     zoom_ *= factor;
     scale(factor, factor);
+}
+
+void PreviewWidget::setEditMode(bool on) {
+    editMode_ = on;
+    // NoDrag while editing: ScrollHandDrag would otherwise consume the
+    // left button for panning before a press ever reaches mousePressEvent,
+    // and would fight with dragging a box around.
+    setDragMode(on ? QGraphicsView::NoDrag : QGraphicsView::ScrollHandDrag);
+}
+
+void PreviewWidget::mousePressEvent(QMouseEvent* event) {
+    if (editMode_) {
+        emit imagePressed(mapToScene(event->pos()), event->button());
+        event->accept();
+        return;
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void PreviewWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (editMode_) {
+        if (event->buttons() & Qt::LeftButton) emit imageMoved(mapToScene(event->pos()));
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+void PreviewWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (editMode_) {
+        emit imageReleased(mapToScene(event->pos()));
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
 }
 
 } // namespace ls

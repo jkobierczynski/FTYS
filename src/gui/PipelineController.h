@@ -35,29 +35,57 @@ class PipelineController : public QObject {
 public:
     explicit PipelineController(QObject* parent = nullptr);
 
+    // Shared bound on how many tracking points/boxes may exist at once,
+    // whether placed automatically (selectAlignmentPoints, via
+    // alignSelected()) or one at a time by hand (the Alignment Point
+    // Inspector's manual add/move/delete mode, via realignWithPoints()).
+    // One constant so the "Number of boxes" spin box, setAlignMaxPoints()'s
+    // clamp, and the manual editor's add-another-box limit can't disagree
+    // with each other.
+    static constexpr int kAlignMaxPointsMin = 4;
+    static constexpr int kAlignMaxPointsMax = 50;
+
     void openSequence(const QString& path);
     void computeQuality();
     void selectPercent(double percent);
     void alignSelected();
-    // Tracking-patch ("box") size used by alignSelected(), in pixels.
-    // Clamped to a sane range and takes effect on the next alignSelected()
-    // call. minSpacing between points scales with it (see PipelineController.cpp)
-    // to keep the validated ~0.75x ratio between patch size and how far
-    // apart candidate points are placed.
+    // Re-runs the per-frame tracking pass (recenter + per-point
+    // correlation + sigma-clip robustify) against an explicit point list
+    // instead of having selectAlignmentPoints() place one automatically --
+    // used after the Alignment Point Inspector's manual box editing
+    // (add/move/delete) so the edited boxes get real per-frame shifts
+    // rather than sitting at their canonical position untracked. Reuses
+    // the already-decoded selected-frame cache and reference frame from
+    // the most recent alignSelected() call rather than redecoding
+    // anything, so an edit-then-retrack cycle is cheap; requires
+    // alignSelected() to have completed at least once this session
+    // (reports errorOccurred() otherwise). `points` is clamped to
+    // kAlignMaxPointsMax by the caller's own add-limit, but a too-large or
+    // empty list here also reports errorOccurred() rather than silently
+    // truncating it.
+    void realignWithPoints(const std::vector<AlignmentPoint>& points);
+    // Tracking-patch ("box") size used by alignSelected() and
+    // realignWithPoints(), in pixels. Clamped to a sane range and takes
+    // effect on the next call to either. minSpacing between points scales
+    // with it (see PipelineController.cpp) to keep the validated ~0.75x
+    // ratio between patch size and how far apart candidate points are
+    // placed -- realignWithPoints() only uses it for tracking, not spacing,
+    // since manual points aren't auto-spaced.
     void setAlignPatchSize(int patchSize);
     int alignPatchSize() const { return alignPatchSize_; }
     // Number of automatically-placed tracking points (see
     // selectAlignmentPoints in MultiPointAlignment.h) to use during the next
-    // alignSelected() call. Clamped to a sane range; how many actually get
-    // placed can still come in lower than this if the disk doesn't have
-    // enough well-spaced, high-contrast candidates.
+    // alignSelected() call. Clamped to [kAlignMaxPointsMin, kAlignMaxPointsMax];
+    // how many actually get placed can still come in lower than this if the
+    // disk doesn't have enough well-spaced, high-contrast candidates.
     void setAlignMaxPoints(int maxPoints);
     int alignMaxPoints() const { return alignMaxPoints_; }
     // Per-frame outlier-rejection threshold (pixels): a point whose
     // estimated shift differs from that frame's consensus by more than this
     // is replaced by the consensus -- see robustifyPointShifts's doc
     // comment in MultiPointAlignment.h for why. Exposed to the GUI as the
-    // "sigma clip" control for deviating boxes.
+    // "sigma clip" control for deviating boxes. Also used by
+    // realignWithPoints().
     void setAlignMaxDeviation(double maxDeviationPx);
     double alignMaxDeviation() const { return alignMaxDeviationPx_; }
     void stackMean(const StackParams& params);
@@ -152,11 +180,31 @@ private:
     ImageBuffer decodeFrame(size_t index) const;
     double estimateSelectedMegabytes() const;
     void cropStackedResultToObject();
+    // Shared per-frame tracking pass used by both alignSelected() (after
+    // automatic placement) and realignWithPoints() (after a manual edit):
+    // correlates every selected frame's already-decoded, already-cached
+    // luminance against the cached reference for each of `points`, robustifies,
+    // and rebuilds alignment_ (points/perFramePointShifts/blendWeights/
+    // averageConfidence) in place. Assumes selectedFrameCache_, referencePos_
+    // and referenceCenter_ are already valid -- callers are responsible for
+    // that precondition. Runs on whatever thread it's called from; both
+    // callers wrap it in QtConcurrent::run().
+    void trackPoints(const std::vector<AlignmentPoint>& points, int patchSize, double maxDeviationPx);
 
     std::unique_ptr<FrameSource> source_;
     std::vector<FrameQuality> qualityScores_;   // one score per frame; never holds pixel data
     std::vector<size_t> selectedIndices_;
     size_t referenceIndex_ = 0;
+    // Position of the reference frame *within* selectedIndices_/
+    // selectedFrameCache_ (as opposed to referenceIndex_, which is its
+    // index in the original, full sequence) -- set by alignSelected(),
+    // reused by realignWithPoints()/trackPoints() so a manual re-track
+    // doesn't need to reselect a reference frame.
+    size_t referencePos_ = 0;
+    // The reference frame's own detected object center, cached from
+    // alignSelected() so realignWithPoints() doesn't need to recompute it
+    // (it's identical for every re-track against the same reference).
+    Point2D referenceCenter_;
 
     // Default matches kDefaultAlignPatchSize in PipelineController.cpp
     // (see its comment for how this was validated); setAlignPatchSize()

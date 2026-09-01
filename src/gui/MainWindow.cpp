@@ -123,16 +123,18 @@ QWidget* MainWindow::buildControlsPanel() {
     auto* maxPointsRow = new QWidget;
     auto* maxPointsRowLayout = new QFormLayout(maxPointsRow);
     alignMaxPointsSpin_ = new QSpinBox;
-    alignMaxPointsSpin_->setRange(4, 40);
+    alignMaxPointsSpin_->setRange(PipelineController::kAlignMaxPointsMin, PipelineController::kAlignMaxPointsMax);
     alignMaxPointsSpin_->setSingleStep(1);
     alignMaxPointsSpin_->setValue(12);
     alignMaxPointsSpin_->setToolTip(
-        "How many tracking boxes to automatically place on the disk's best-"
-        "contrast features (belt edges, festoons, the limb). More points can "
-        "resolve local seeing distortion in finer detail on a larger or "
-        "higher-contrast disk; a small or soft one may not have enough "
-        "well-spaced high-contrast spots to fill a high count, and will fall "
-        "back to fewer than requested.");
+        QString("How many tracking boxes to automatically place on the disk's best-"
+                "contrast features (belt edges, festoons, the limb). More points can "
+                "resolve local seeing distortion in finer detail on a larger or "
+                "higher-contrast disk; a small or soft one may not have enough "
+                "well-spaced high-contrast spots to fill a high count, and will fall "
+                "back to fewer than requested. Capped at %1, same limit as the manual "
+                "box editor in Inspect Alignment Points...")
+            .arg(PipelineController::kAlignMaxPointsMax));
     maxPointsRowLayout->addRow("Number of boxes:", alignMaxPointsSpin_);
     alignLayout->addWidget(maxPointsRow);
 

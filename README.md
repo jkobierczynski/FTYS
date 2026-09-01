@@ -40,10 +40,15 @@ Work through the panel top to bottom:
 3. **Keep best %** — pick what fraction of frames to keep (the estimated
    memory use updates live, so you can back off before it gets too high).
 4. **Align Selected Frames** — tracks several points across the disk and
-   aligns each frame to them. "Box size", "Number of boxes", and "Max
-   deviation" tune how that tracking works; the defaults are a good
+   aligns each frame to them. "Box size", "Number of boxes" (up to 50), and
+   "Max deviation" tune how that tracking works; the defaults are a good
    starting point. **Inspect Alignment Points...** lets you scrub through
-   frames and watch the tracking boxes to sanity-check it.
+   frames and watch the tracking boxes to sanity-check it — a box drawn in
+   red for a given frame means it was sigma-clipped (its own measured shift
+   didn't look trustworthy, so it was replaced by the frame's consensus
+   instead). The same dialog's **Manual box editing** mode lets you add,
+   drag, or right-click-delete boxes by hand and re-track with them,
+   instead of relying only on automatic placement.
 5. **Stack** — Mean, Sigma-Clip, or Drizzle.
 6. **Apply Sharpening** — Wavelet or Richardson-Lucy.
 7. **Apply Color Adjustments** — levels, curve, saturation.
@@ -68,8 +73,17 @@ on your equipment, obviously). It auto-detects the disk and crops to it.
 **What are the alignment "boxes"?** Small tracking patches placed
 automatically on the sharpest, highest-contrast parts of the disk (belt
 edges, craters, limb detail), each tracked frame to frame — the same idea
-as AutoStakkert's Multiple Alignment Points. **Inspect Alignment Points...**
-lets you watch them work.
+as AutoStakkert's Multiple Alignment Points, up to 50 of them. **Inspect
+Alignment Points...** lets you watch them work; a box that shows up red on
+a given frame means that frame's own measurement for it was rejected
+("sigma-clipped") and replaced with the consensus from the other boxes.
+
+**Can I place alignment boxes myself instead of only automatically?** Yes
+— in **Inspect Alignment Points...**, turn on **Manual box editing**: click
+empty space on the disk to add a box (up to 50 total), drag an existing box
+to reposition it, right-click one to delete it, then hit **Re-track with
+these boxes**. **Reset to automatic placement** discards your edits and
+goes back to the automatic layout.
 
 **What's the Chromatic Aberration panel for?** Correcting red/blue color
 fringing around the disk's edge caused by the telescope's optics. Auto-detect

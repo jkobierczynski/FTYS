@@ -530,10 +530,137 @@ window title, and `QApplication::setApplicationName`/`setOrganizationName`
 were all updated accordingly; the binary is now `ftys` instead of
 `luckystack`.
 
+## Manual alignment-box editing, and sigma-clipped boxes shown in red
+
+Two additions to multi-point alignment, both scoped to
+MultiPointAlignment/PipelineController/AlignmentInspectorDialog:
+
+- **Sigma-clipped boxes shown in red.** `robustifyPointShifts()`
+  (MultiPointAlignment.cpp) already replaced an unreliable point's shift
+  with the frame's consensus, but silently -- nothing recorded *which*
+  points that happened to. Added `Transform2D::clipped` (Alignment.h,
+  default `false`), set `true` by `robustifyPointShifts()` whenever it
+  overwrites a point's own measurement. `AlignmentInspectorDialog::
+  updateView()` now colors a box red for a given frame when
+  `pointShiftsForFrame(pos)[i].clipped` is true, yellow otherwise, and the
+  info line reports how many of that frame's boxes were clipped. Verified
+  on the synthetic Jupiter test capture (see below): 240 of 8000 total
+  (frame, point) shifts across the run were clipped (3.0%), and a specific
+  box (#44, sitting right at the limb where confidence is naturally
+  weaker) showed up red in the saved inspector frame while every other box
+  stayed yellow -- confirmed by actually rendering and looking at the
+  frame, not just checking the count.
+
+- **Manual box editing (add/move/delete), automatic placement raised to a
+  cap of 50.** `PipelineController::kAlignMaxPointsMax` (previously a
+  file-local constant, 40) is now a public class constant, raised to 50,
+  and shared by three places that used to duplicate or hardcode it: the
+  "Number of boxes" spin box's range, `setAlignMaxPoints()`'s clamp, and
+  the manual editor's add-limit.
+
+  The per-frame tracking pass that used to live inline in `alignSelected()`
+  (recenter + per-point correlation + `robustifyPointShifts`) was factored
+  out into a new private `PipelineController::trackPoints(points, patchSize,
+  maxDeviationPx)`, which assumes the selected-frame cache and reference
+  frame (now cached in new members `referencePos_` / `referenceCenter_`,
+  alongside the existing `referenceIndex_`) are already valid.
+  `alignSelected()` calls it after automatic placement, exactly as before;
+  a new public `realignWithPoints(points)` calls it directly with a
+  caller-supplied point list instead, skipping `selectAlignmentPoints()`
+  entirely. Both emit the same `alignDone` signal, so nothing downstream
+  (MainWindow's `onAlignDone`, which refreshes an open inspector) needed to
+  change. `realignWithPoints()` reuses the already-decoded
+  `selectedFrameCache_` from the last `alignSelected()` call rather than
+  redecoding the sequence, so an edit-then-retrack cycle only pays for the
+  correlation pass, not another full decode.
+
+  `PreviewWidget` gained an edit mode: `setEditMode(true)` swaps
+  `ScrollHandDrag` for `NoDrag` (so a left-press starts a box interaction
+  instead of panning) and starts emitting `imagePressed`/`imageMoved`/
+  `imageReleased` signals in *scene* coordinates -- which are the same
+  coordinates `AlignmentPoint::x/y` already use, since `setImage()` sizes
+  the scene rect to exactly the pixmap's bounding rect at the origin.
+  `AlignmentInspectorDialog` added a "Manual box editing" checkbox that
+  forces (and disables toggling of) the "aligned" view and disables frame
+  scrubbing while active -- boxes are edited in the reference frame's
+  canonical coordinate space, and "aligned" is the only view where that
+  space lines up consistently across every frame, regardless of which
+  frame happens to be displayed. While editing: left-click empty space
+  adds a box (rejected past 50, with a message rather than silently
+  failing); left-press-and-drag an existing box moves it; right-click
+  deletes it. Edits are staged in `editedPoints_` (drawn in cyan, the
+  actively-dragged one in white) and only take effect -- get real
+  per-frame shifts instead of sitting untracked at their canonical
+  position -- once "Re-track with these boxes" calls
+  `realignWithPoints(editedPoints_)`; "Reset to automatic placement" just
+  calls `alignSelected()` again, reusing whatever patch size/max points/max
+  deviation the controller currently holds.
+
+  Verified headlessly against the synthetic Jupiter capture (three
+  standalone drivers, not part of ctest): (1) `setAlignMaxPoints(50)` then
+  `alignSelected()` placed exactly 50 points, confirming the raised cap
+  actually takes effect, not just accepted and silently clamped lower
+  elsewhere; (2) a synthetic edit (drop the last point, shift point 0 by
+  (+15,+10)px, append a new point at the frame center) passed to
+  `realignWithPoints()` completed, reported the edited point count back,
+  and produced non-trivial (non-zero) per-frame shifts for a mid-sequence
+  frame -- i.e. real tracking ran against the edited list rather than
+  copying stale data -- and the too-many-points (51) and empty-list error
+  paths both reported `errorOccurred` as expected rather than crashing or
+  silently doing nothing; (3) a dialog-level test constructed a real
+  `AlignmentInspectorDialog`, toggled its actual "Manual box editing"
+  checkbox, drove `PreviewWidget`'s real `imagePressed`/`imageMoved`/
+  `imageReleased` signals to add, drag, and right-click-delete boxes
+  exactly as real mouse events would, then clicked the real "Re-track"
+  button -- confirming the whole add/move/delete/retrack path works
+  through the actual widgets, not just the controller underneath them.
+
+## Synthetic test capture
+
+Since no confidently-licensed real planetary AVI sample was readily
+available, a synthetic Jupiter-like capture generator was written instead
+(`make_synthetic_capture.py`) to exercise every pipeline stage end to end:
+a belted, oblate, limb-darkened disk with festoon texture, per-frame
+variable "seeing" blur, mount drift + jitter, sensor noise, and a baked-in
+per-channel chromatic-aberration shift, encoded to a 400-frame MJPEG AVI
+(matching real capture conventions) at 944x632.
+
+Two real bugs were caught by checking actual output rather than assuming
+the script did what it was meant to: an oversampled (2x) render step that
+was never downsampled back to the target resolution before being used
+per-frame (caught via ffmpeg's own reported input size, exactly 2x the
+intended W/H), and a baked chromatic-aberration shift applied *before*
+that same downsample, silently halving the intended magnitude (fixed by
+reordering: downsample first, then shift, so the constants really are
+final-resolution pixel offsets as documented).
+
+A third finding was about MJPEG itself, not the script: comparing
+`detectChromaticAberration()` on the same frame before and after an
+MJPEG round-trip showed a ~40-170x attenuation of the fine, sub-pixel
+per-channel shift signal (0.68px measured pre-encode, 0.004-0.02px after,
+across several tested magnitudes and quality settings, including 4:4:4
+chroma at near-max quality) -- JPEG's chroma quantization is specifically
+tuned to discard the kind of fine high-frequency color detail a sub-pixel
+fringe amounts to, confirmed by a lossless FFV1 round-trip preserving the
+same signal almost exactly. Stacking many frames did not recover it either
+(the attenuation is a systematic per-frame effect, not random noise that
+averages out), so the baked CA magnitude was increased (from under 1px to
+~2-3px per channel) until the fringe was clearly visible in the final
+stacked/color-adjusted output by eye -- confirmed in the actual delivered
+image -- even though whole-frame FFT auto-detect on the compressed result
+still underestimates its true magnitude, a real and honestly-reported
+limitation of auto-detecting CA on compressed footage, not a bug in the
+CA correction feature itself (which was validated separately against
+uncompressed/lossless data, see the chromatic-aberration section above).
+
+The full pipeline (open -> quality -> select -> align -> stack -> sharpen
+-> color -> export) was run against the resulting AVI via
+`manual_pipeline_run` and produced a clean, sharp, correctly 400-frame,
+944x632 result with a visibly correct (if auto-detect-underestimated)
+color fringe.
+
 ## Next steps
 
 1. Port to Windows and macOS (vcpkg/Conan for dependencies, CI builds).
 2. 16-bit export (TIFF/FITS).
-3. Manual alignment-point add/move/delete (AutoStakkert-style editing on
-   top of the automatic placement).
-4. Live curve-drag preview instead of requiring "Apply".
+3. Live curve-drag preview instead of requiring "Apply".
