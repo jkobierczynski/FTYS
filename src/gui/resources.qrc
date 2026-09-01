@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="ftys_logo.png">../../assets/ftys_logo.png</file>
+    </qresource>
+</RCC>
