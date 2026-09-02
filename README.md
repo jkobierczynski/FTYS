@@ -179,6 +179,10 @@ start.
 
 Not attempted at all yet: macOS. See the [FAQ](#faq) below.
 
+## Screenshot Windows
+
+![FTYS](FTYS-screenshot-windows.jpg)
+
 ## Using it
 
 Work through the panel top to bottom:
