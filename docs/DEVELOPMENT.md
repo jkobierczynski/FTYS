@@ -1281,8 +1281,185 @@ Studio already), but a real problem for anyone they hand the exe to.
 Fixed by adding that to step 5, along with `windeployqt.exe`'s
 `--compiler-runtime` flag, which bundles those same DLLs automatically.
 
+## CI (GitHub Actions)
+
+Added `.github/workflows/build.yml` after the project was published on
+GitHub, so every push/PR gets built and tested on both platforms
+automatically instead of relying on a real person to hit build breakage
+first -- exactly the gap that made every fix in the Windows-port log
+above take a live back-and-forth to find. Deliberately mirrors the
+README's own documented build steps rather than inventing a different
+path: Linux job installs the same apt packages listed in "Build (Linux)"
+and runs a plain `cmake`/`ctest`; Windows job installs the MSVC 2022 64-bit
+Qt kit (never MinGW -- see the sixth/seventh real-user-signal entries
+above for why that specifically breaks), bootstraps vcpkg via
+`lukka/run-vcpkg` (which also wires up vcpkg's binary caching backed by
+the GitHub Actions cache -- without it, every single run would rebuild
+FFmpeg from source, the "very slow, expected" issue documented above,
+instead of restoring a cached copy after the first run), and configures
+with the same `x64-windows-release` triplet and MSVC flags CMakeLists.txt
+already sets. Both jobs package their built binary as a workflow artifact
+(Windows via `windeployqt.exe --compiler-runtime` + copying the
+vcpkg-built DLLs, same as README step 5; Linux as a plain binary with a
+caveat file about needing matching system library versions, since there's
+no AppImage/static-linking setup here). A third job attaches both
+packages to a GitHub Release whenever a `v*` tag is pushed. None of this
+can be exercised in this sandbox (no GitHub Actions runner available
+here) -- the YAML was checked for valid syntax, and each action's current
+usage was verified against its own docs rather than assumed from memory,
+but the workflow itself is unverified until it actually runs on GitHub.
+
+**First real CI run: Linux passed, Windows failed at "Install Qt."** The
+Linux job worked on the first try -- good early evidence the plain
+apt+cmake+ctest path this job mirrors from the README is solid in CI, not
+just on this sandbox. The Windows job failed inside
+`jurplel/install-qt-action`'s own internal "Setup and run aqtinstall"
+step, before it ever got to installing Qt itself: `Unexpected error
+attempting to determine if executable file exists
+'C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps\python.EXE':
+Error: EACCES: permission denied`. Root cause, confirmed against
+upstream: GitHub's windows-latest runner images ship a Windows "App
+Execution Alias" stub at that exact path (and the same for `python3.exe`)
+that isn't a real Python -- it's a placeholder Windows Store redirect.
+`@actions/toolkit` (used internally by many actions, including this
+one's Python-invoking step) resolves executables on `PATH` with `stat()`,
+which follows the alias's reparse point and throws `EACCES`, instead of
+`lstat()`, which wouldn't; this is a known, already-acknowledged upstream
+bug (`actions/toolkit#1925`, with an `lstat()` fix already up as
+`actions/toolkit#1953`) that install-qt-action's own bundled toolkit
+version hits when its internal aqtinstall setup tries to shell out to
+`python`. Nothing about our CMake/vcpkg/Qt setup was wrong -- the failure
+never got that far. Fixed by adding a step immediately before "Install
+Qt" that deletes both alias stub files
+(`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`/`python3.exe`) with
+`Remove-Item -ErrorAction SilentlyContinue`, so nothing ever tries to
+resolve them again -- chosen over trying to filter `WindowsApps` out of
+`PATH` via `$GITHUB_ENV`/`$GITHUB_PATH`, since that mechanism is
+documented to behave inconsistently between bash and pwsh specifically
+on Windows runners, where deleting the two known files at their known
+paths is a more direct, reliable fix. Like the workflow itself, this is
+grounded in the actual upstream bug reports rather than guessed, but
+still unverified until the next real CI run confirms it.
+
+**Second CI attempt: past the WindowsApps bug, new failure fetching Qt
+6.11.2 itself.** The python-alias fix worked -- aqtinstall now runs (v3.3.0
+on Python 3.12.10) and gets as far as actually requesting Qt. It then
+failed with `WARNING: Failed to download checksum for the file
+'online/qtsdkrepository/windows_x86/desktop/qt6_6112/qt6_6112/Updates.xml'`
+followed by `ERROR: Failed to locate XML data for Qt version '6.11.2'`.
+Root cause, confirmed against the aqtinstall project's own issue tracker:
+Qt restructured its download-repository folder layout starting at 6.11 --
+older layouts nested a second `qt6_XXXX` folder per compiler variant
+(`qt6_6110/qt6_6110/Updates.xml`), the new one puts each compiler variant
+directly (`qt6_6112/qt6_6112_msvc2022_64/Updates.xml`) -- and aqtinstall
+didn't gain support for the new layout until after its current stable
+PyPI release (3.3.0, June 2025); the fix ("Support Qt 6.11+ for Windows
+X64", miurahr/aqtinstall#959 and #1000) exists only in an unreleased dev
+build as of this writing. `pip install aqtinstall` (what
+install-qt-action actually runs) has no way to get that fix yet. This has
+nothing to do with this project's own code or CMake setup -- it's purely
+"the Qt-fetching tool doesn't understand the new Qt version's folder
+layout yet." Fixed by pinning CI to `6.10.*` instead of `6.11.2` --
+deliberately *not* matching the version confirmed working on the
+maintainer's own Windows machine, since there's nothing 6.11-specific
+in this codebase and any recent Qt6 release builds an equivalent app;
+`6.10.*` predates the repo-layout change, so it's unaffected. Worth
+bumping back to a 6.11.x/6.12.x wildcard once aqtinstall ships a stable
+release with the new-layout support -- there's a comment in the workflow
+itself as a reminder of exactly that.
+
+**Third CI attempt: past Qt entirely, `lukka/run-vcpkg` now fails
+immediately** with `Error: A Git commit id for vcpkg's baseline was not
+found nor in vcpkg.json nor in vcpkg-configuration.json`. Straightforward
+this time: `vcpkg.json` never had a `builtin-baseline` field (it only
+ever needed one for reproducible version resolution, which nothing in
+this project's manual local workflow required), and `lukka/run-vcpkg@v11`
+requires one -- it's how the action knows which exact vcpkg commit to
+check out for its own bootstrap and caching, not optional the way it was
+for a plain manual `vcpkg install`. Fixed by adding
+`"builtin-baseline": "30ef65cad98f08e7197c9a1656fbd871bcb72f2d"` to
+`vcpkg.json` (a real commit from `microsoft/vcpkg`, dated 2026-08-31,
+confirmed to actually contain all five of this project's dependencies in
+its `versions/baseline.json` before pinning it). This is a genuine
+project-wide improvement, not a CI-only patch: it pins exactly which
+port versions get resolved for anyone running `vcpkg install` from this
+manifest, local or CI, rather than silently floating to whatever's newest
+in each person's own local vcpkg clone -- the kind of reproducibility gap
+that eventually causes "it built fine for me yesterday" reports. Worth
+bumping this hash forward periodically (`git rev-parse HEAD` in a fresh
+vcpkg clone) rather than letting it go stale for years.
+
+**Fourth CI attempt: past vcpkg entirely (full dependency build succeeded,
+about an hour on a cold cache -- expected, see the "very slow" entry
+above), new failure in CMake's own configure step:**
+`CMake Error at CMakeLists.txt:2 (project): Generator Visual Studio 17
+2022 could not find any instance of Visual Studio.` Confirmed against
+GitHub's own runner-images repo: `windows-latest` moved from Windows
+Server 2022 (Visual Studio 2022) to Windows Server 2025 (Visual Studio
+2026) in mid-2026 -- the workflow's hardcoded `-G "Visual Studio 17 2022"`
+was written against the old image and stopped matching reality the
+moment GitHub finished that rollout. Confirmation this is exactly a
+version-name mismatch, not a missing MSVC install: vcpkg had *just*
+successfully compiled OpenCV/FFmpeg/etc. with `cl.exe` moments earlier in
+the very same job, so a working MSVC toolchain was unambiguously present
+-- CMake's own generator-name lookup was simply asking for a VS version
+that no longer exists on the image. This is also exactly the generator
+this project's own real user's local machine reports
+(`-- Building for: Visual Studio 18 2026`, visible all the way back in
+this log's very first Windows CMake error) when *not* passing `-G` at
+all -- i.e. the README's local instructions were never at risk of this,
+only this workflow's hardcoded generator name was. Fixed by dropping
+`-G "Visual Studio 17 2022"` entirely and letting CMake auto-detect
+whichever VS is actually installed, same as the README already does --
+keeping `-A x64` explicit, though, since unlike the generator name that
+flag isn't tied to a specific VS version and stays correct across future
+runner-image upgrades, whereas an omitted `-A` risks a silent 32-bit
+configure that wouldn't link against the `x64-windows-release` vcpkg
+libraries. This should make the workflow durable against the *next* VS
+version bump too, rather than just patching today's mismatch.
+
+**Fifth CI attempt: past CMake's configure step too, build succeeded on
+Windows, but `ctest` failed there --** `test_io` reported `Exit code
+0xc0000409***Exception` and `test_integration` reported `***Failed`,
+while `test_proc` passed (33% tests passed, 2/3 failed). The exit code
+looks alarming -- `0xc0000409` is `STATUS_STACK_BUFFER_OVERRUN`, which
+sounds like a genuine memory-safety bug -- but reading `test_io.cpp`
+and `SerReader.h`/`.cpp` end to end found every fixed-size buffer read
+and write matching its declared size exactly (the 14-byte SER file-ID
+field, the three 40-byte header strings, all of it). The real clue was
+which tests failed: exactly the two (`test_io`, `test_integration`)
+that write scratch files to a hardcoded `"/tmp/..."` path, while
+`test_proc` -- which touches no files at all -- passed clean. On Linux
+`/tmp` always exists; on Windows it resolves to `<current drive
+root>\tmp\...` (e.g. `D:\tmp\...` in CI), a directory nothing ever
+creates. `std::ofstream`/`QFile` don't throw when the parent directory
+is missing -- the open just silently fails -- so the write itself
+doesn't crash; it's the read-back immediately afterward that throws
+(file not found). These test drivers are a single `main()` with no
+`try`/`catch`, so the uncaught exception reaches `std::terminate()` ->
+`abort()`, and on Windows/MSVC's UCRT that surfaces to the OS as the
+generic fail-fast code `STATUS_STACK_BUFFER_OVERRUN` -- a real crash,
+just not the kind its name implies. Fixed by adding a shared
+`tests/TestTempDir.h` header (`ls::test::tempPath(filename)`, built on
+`std::filesystem::temp_directory_path()`, which resolves correctly and
+is guaranteed to already exist on every platform) and switching every
+hardcoded `/tmp/...` reference over to it: `test_io.cpp` and
+`test_integration.cpp` (the two tests ctest actually runs and the two
+that were failing), plus three more manual/diagnostic drivers that
+aren't part of ctest but had the exact same latent bug --
+`export_validation.cpp`, `inspector_verify.cpp` (using `QDir::tempPath()`
+instead, since those files are already Qt-heavy), and
+`manual_pipeline_run.cpp`. Rebuilt clean and reran the full suite in
+this sandbox afterward -- all three tests still pass on Linux
+(`test_io`, `test_proc`, `test_integration`, 100%), confirming the
+portable-path helper didn't regress anything here; the real test of the
+Windows fix is the next CI run.
+
 ## Next steps
 
 1. Do a real macOS port (this environment has no macOS machine, so it'll
    need the same kind of source-level-first, then real-user-verified
    loop that got the Windows port working).
+2. Watch the new CI workflow's first real run on GitHub and fix whatever
+   it gets wrong -- same real-user-verification discipline as the Windows
+   port itself, just aimed at a workflow file instead of a build.

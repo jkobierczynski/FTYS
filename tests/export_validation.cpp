@@ -12,6 +12,7 @@
 #include "gui/PipelineController.h"
 #include "io/FitsReader.h"
 #include "core/ImageBuffer.h"
+#include "TestTempDir.h"
 
 #include <QCoreApplication>
 #include <QTimer>
@@ -84,25 +85,26 @@ int main(int argc, char** argv) {
         qInfo() << "colorDone" << img.size() << "channels(alpha?)=" << img.hasAlphaChannel();
 
         struct Case {
-            const char* path;
+            std::string path;
             ls::ExportFormat format;
             ls::ExportBitDepth bitDepth;
             const char* label;
         };
         std::vector<Case> cases = {
-            {"/tmp/export_validation_png8.png", ls::ExportFormat::PNG, ls::ExportBitDepth::Eight, "PNG-8"},
-            {"/tmp/export_validation_tiff8.tif", ls::ExportFormat::TIFF, ls::ExportBitDepth::Eight, "TIFF-8"},
-            {"/tmp/export_validation_tiff16.tif", ls::ExportFormat::TIFF, ls::ExportBitDepth::Sixteen, "TIFF-16"},
-            {"/tmp/export_validation_fits8.fits", ls::ExportFormat::FITS, ls::ExportBitDepth::Eight, "FITS-8"},
-            {"/tmp/export_validation_fits16.fits", ls::ExportFormat::FITS, ls::ExportBitDepth::Sixteen, "FITS-16"},
+            {ls::test::tempPath("export_validation_png8.png"), ls::ExportFormat::PNG, ls::ExportBitDepth::Eight, "PNG-8"},
+            {ls::test::tempPath("export_validation_tiff8.tif"), ls::ExportFormat::TIFF, ls::ExportBitDepth::Eight, "TIFF-8"},
+            {ls::test::tempPath("export_validation_tiff16.tif"), ls::ExportFormat::TIFF, ls::ExportBitDepth::Sixteen, "TIFF-16"},
+            {ls::test::tempPath("export_validation_fits8.fits"), ls::ExportFormat::FITS, ls::ExportBitDepth::Eight, "FITS-8"},
+            {ls::test::tempPath("export_validation_fits16.fits"), ls::ExportFormat::FITS, ls::ExportBitDepth::Sixteen, "FITS-16"},
         };
 
         for (auto& c : cases) {
             // Remove any stale file from a previous run so we can trust
             // that a passing existence/size check reflects THIS run.
-            QFile::remove(c.path);
-            bool exported = controller->exportImage(c.path, c.format, c.bitDepth);
-            QFileInfo fi(c.path);
+            QString qpath = QString::fromStdString(c.path);
+            QFile::remove(qpath);
+            bool exported = controller->exportImage(qpath, c.format, c.bitDepth);
+            QFileInfo fi(qpath);
             qInfo() << "[" << c.label << "] exportImage ok=" << exported << "exists=" << fi.exists()
                     << "size=" << fi.size() << "bytes";
             if (!exported || !fi.exists() || fi.size() <= 0) {
@@ -116,8 +118,8 @@ int main(int argc, char** argv) {
         // verify the writer's NAXIS/plane-order convention actually
         // matches what FitsReader expects to read (a designed invariant,
         // not something the build alone can confirm).
-        for (auto pathBits : {std::make_pair(std::string("/tmp/export_validation_fits8.fits"), 8),
-                               std::make_pair(std::string("/tmp/export_validation_fits16.fits"), 16)}) {
+        for (auto pathBits : {std::make_pair(ls::test::tempPath("export_validation_fits8.fits"), 8),
+                               std::make_pair(ls::test::tempPath("export_validation_fits16.fits"), 16)}) {
             ls::ImageBuffer frame;
             int gotW = 0, gotH = 0, gotCh = 0;
             try {

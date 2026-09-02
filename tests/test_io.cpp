@@ -6,6 +6,7 @@
 
 #include "core/FrameSource.h"
 #include "core/ImageBuffer.h"
+#include "TestTempDir.h"
 
 #include <fitsio.h>
 extern "C" {
@@ -171,7 +172,7 @@ std::string writeSyntheticAvi(const std::string& path) {
 }
 
 void testSer() {
-    std::string path = writeSyntheticSer("/tmp/ls_test.ser");
+    std::string path = writeSyntheticSer(ls::test::tempPath("ls_test.ser"));
     auto src = ls::openFrameSource(path);
     expect(src->width() == W, "SER width");
     expect(src->height() == H, "SER height");
@@ -189,7 +190,7 @@ void testSer() {
 }
 
 void testFits() {
-    std::string path = writeSyntheticFits("/tmp/ls_test.fits");
+    std::string path = writeSyntheticFits(ls::test::tempPath("ls_test.fits"));
     auto src = ls::openFrameSource(path);
     expect(src->width() == W, "FITS width");
     expect(src->height() == H, "FITS height");
@@ -202,7 +203,7 @@ void testFits() {
 }
 
 void testAvi() {
-    std::string path = writeSyntheticAvi("/tmp/ls_test.avi");
+    std::string path = writeSyntheticAvi(ls::test::tempPath("ls_test.avi"));
     auto src = ls::openFrameSource(path);
     expect(src->width() == W, "AVI width");
     expect(src->height() == H, "AVI height");

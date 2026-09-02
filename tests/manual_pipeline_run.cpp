@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QDir>
 
 #include <algorithm>
 #include <cstdio>
@@ -94,7 +95,7 @@ int main(int argc, char** argv) {
         // footage itself or from something introduced by alignment/stacking.
         for (int idx : {0, n / 4, n / 2}) {
             QImage f = controller->previewFrame(idx);
-            f.save(QString("/tmp/real_test_raw_frame_%1.png").arg(idx));
+            f.save(QDir(QDir::tempPath()).filePath(QString("real_test_raw_frame_%1.png").arg(idx)));
         }
         controller->computeQuality();
     });
@@ -119,11 +120,11 @@ int main(int argc, char** argv) {
         // 0 and the final stack.
         if (!scores.empty()) {
             QImage best = controller->previewFrame(static_cast<int>(scores[0].index));
-            best.save(QString("/tmp/real_test_best_raw_frame_%1.png").arg(scores[0].index));
+            best.save(QDir(QDir::tempPath()).filePath(QString("real_test_best_raw_frame_%1.png").arg(scores[0].index)));
             qInfo() << "saved best raw frame idx" << static_cast<int>(scores[0].index);
 
             QImage worst = controller->previewFrame(static_cast<int>(scores.back().index));
-            worst.save(QString("/tmp/real_test_worst_raw_frame_%1.png").arg(scores.back().index));
+            worst.save(QDir(QDir::tempPath()).filePath(QString("real_test_worst_raw_frame_%1.png").arg(scores.back().index)));
             qInfo() << "saved worst raw frame idx" << static_cast<int>(scores.back().index);
         }
 
@@ -154,7 +155,7 @@ int main(int argc, char** argv) {
     QObject::connect(controller, &ls::PipelineController::stackDone, [&](QImage img) {
         qInfo() << "stackDone" << img.size() << "at" << timer.elapsed() << "ms";
         reportMem("stack-done");
-        img.save("/tmp/real_test_stack_only.png");
+        img.save(QDir(QDir::tempPath()).filePath("real_test_stack_only.png"));
         ls::WaveletParams wp;
         wp.layerGains = {g1, g2, g3, g4};
         qInfo() << "wavelet gains" << g1 << g2 << g3 << g4;
@@ -164,7 +165,7 @@ int main(int argc, char** argv) {
     QObject::connect(controller, &ls::PipelineController::sharpenDone, [&](QImage img) {
         qInfo() << "sharpenDone" << img.size() << "at" << timer.elapsed() << "ms";
         reportMem("sharpen-done");
-        img.save("/tmp/real_test_sharpen_only.png");
+        img.save(QDir(QDir::tempPath()).filePath("real_test_sharpen_only.png"));
         ls::LevelsParams lp;
         lp.blackPoint = static_cast<float>(blackPoint);
         lp.whitePoint = static_cast<float>(whitePoint);
@@ -176,7 +177,7 @@ int main(int argc, char** argv) {
     QObject::connect(controller, &ls::PipelineController::colorDone, [&](QImage img) {
         qInfo() << "colorDone" << img.size() << "at" << timer.elapsed() << "ms";
         reportMem("color-done");
-        bool exported = controller->exportImage("/tmp/real_test_out.png");
+        bool exported = controller->exportImage(QDir(QDir::tempPath()).filePath("real_test_out.png"));
         qInfo() << "export ok=" << exported;
         ok = ok && exported;
         QCoreApplication::exit(ok ? 0 : 1);
