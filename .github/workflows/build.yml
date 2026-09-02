@@ -70,6 +70,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub's windows-latest runners ship a broken "App Execution
+      # Alias" stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe
+      # (and python3.exe) that isn't a real Python install -- it's a
+      # known upstream bug in @actions/toolkit's executable-resolution
+      # code (uses stat(), which follows the alias's reparse point and
+      # throws EACCES, instead of lstat(); see actions/toolkit#1925 and
+      # the lstat fix in actions/toolkit#1953) that breaks anything
+      # trying to resolve `python`/`python3` off PATH before reaching the
+      # real interpreter -- including install-qt-action's own internal
+      # aqtinstall setup below. Deleting the stub sidesteps it entirely
+      # (simpler and more reliable than trying to filter PATH itself,
+      # which behaves inconsistently between bash and pwsh on Windows
+      # runners); -ErrorAction SilentlyContinue in case a future runner
+      # image doesn't have it, or the upstream bug gets fixed first.
+      - name: Remove broken WindowsApps python.exe alias (actions/toolkit#1925)
+        shell: pwsh
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe"
+          Remove-Item -Force -ErrorAction SilentlyContinue "$env:LOCALAPPDATA\Microsoft\WindowsApps\python3.exe"
+
       # MSVC 2022, not MinGW -- this project's vcpkg-built dependencies
       # and the app itself are all built with cl.exe, and a MinGW-built Qt
       # cannot be linked into an MSVC-built program (incompatible C++
