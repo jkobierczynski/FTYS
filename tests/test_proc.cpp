@@ -240,6 +240,69 @@ void testColorStretch() {
     expect(hist[expectedBin] == 64, "histogram: constant image bins entirely into the expected bin");
 }
 
+void testColorBalanceHueBrightness() {
+    // Color balance: independent per-channel gain, clamped to [0,1].
+    ls::ImageBuffer rgb(1, 1, 3);
+    rgb.at(0, 0, 0) = 0.4f;
+    rgb.at(0, 0, 1) = 0.4f;
+    rgb.at(0, 0, 2) = 0.4f;
+    ls::ColorBalanceParams cbp;
+    cbp.redGain = 2.0f;
+    cbp.greenGain = 1.0f;
+    cbp.blueGain = 0.5f;
+    ls::ImageBuffer balanced = ls::applyColorBalance(rgb, cbp);
+    expect(std::fabs(balanced.at(0, 0, 0) - 0.8f) < 1e-5f, "color balance: red gain 2x scales 0.4 to 0.8");
+    expect(std::fabs(balanced.at(0, 0, 1) - 0.4f) < 1e-5f, "color balance: green gain 1x is a no-op");
+    expect(std::fabs(balanced.at(0, 0, 2) - 0.2f) < 1e-5f, "color balance: blue gain 0.5x scales 0.4 to 0.2");
+
+    ls::ImageBuffer rgbHigh(1, 1, 3);
+    rgbHigh.at(0, 0, 0) = 0.9f;
+    rgbHigh.at(0, 0, 1) = 0.9f;
+    rgbHigh.at(0, 0, 2) = 0.9f;
+    ls::ColorBalanceParams cbpClamp;
+    cbpClamp.redGain = 2.0f;
+    ls::ImageBuffer clamped = ls::applyColorBalance(rgbHigh, cbpClamp);
+    expect(std::fabs(clamped.at(0, 0, 0) - 1.0f) < 1e-5f, "color balance: result clamps to 1.0, doesn't overflow");
+
+    ls::ImageBuffer mono(1, 1, 1);
+    mono.fill(0.5f);
+    ls::ImageBuffer monoBalanced = ls::applyColorBalance(mono, cbp);
+    expect(std::fabs(monoBalanced.at(0, 0, 0) - 0.5f) < 1e-5f, "color balance: no-op on mono images");
+
+    // Hue rotation: 0 degrees is a no-op; +120 degrees on pure red should
+    // land close to pure green (red -> green is exactly +120 deg on the
+    // standard HSV wheel).
+    ls::ImageBuffer red(1, 1, 3);
+    red.at(0, 0, 0) = 1.0f;
+    red.at(0, 0, 1) = 0.0f;
+    red.at(0, 0, 2) = 0.0f;
+    ls::HueParams hueZero;
+    ls::ImageBuffer notRotated = ls::applyHueRotation(red, hueZero);
+    expect(std::fabs(notRotated.at(0, 0, 0) - 1.0f) < 1e-4f && std::fabs(notRotated.at(0, 0, 1)) < 1e-4f &&
+               std::fabs(notRotated.at(0, 0, 2)) < 1e-4f,
+           "hue: 0 degrees is a no-op on pure red");
+    ls::HueParams hue120;
+    hue120.hueDegrees = 120.0f;
+    ls::ImageBuffer rotated = ls::applyHueRotation(red, hue120);
+    expect(std::fabs(rotated.at(0, 0, 0)) < 1e-3f && std::fabs(rotated.at(0, 0, 1) - 1.0f) < 1e-3f &&
+               std::fabs(rotated.at(0, 0, 2)) < 1e-3f,
+           "hue: +120 degrees rotates pure red to pure green");
+    ls::ImageBuffer monoHued = ls::applyHueRotation(mono, hue120);
+    expect(std::fabs(monoHued.at(0, 0, 0) - 0.5f) < 1e-5f, "hue: no-op on mono images");
+
+    // Brightness: additive offset, clamped both directions.
+    ls::ImageBuffer flat(1, 1, 1);
+    flat.fill(0.5f);
+    ls::BrightnessParams bpUp;
+    bpUp.brightness = 0.2f;
+    ls::ImageBuffer brighter = ls::applyBrightness(flat, bpUp);
+    expect(std::fabs(brighter.at(0, 0, 0) - 0.7f) < 1e-5f, "brightness: +0.2 offset adds directly");
+    ls::BrightnessParams bpDown;
+    bpDown.brightness = -0.9f;
+    ls::ImageBuffer clampedLow = ls::applyBrightness(flat, bpDown);
+    expect(std::fabs(clampedLow.at(0, 0, 0)) < 1e-5f, "brightness: negative offset clamps to 0.0, doesn't go negative");
+}
+
 } // namespace
 
 int main() {
@@ -250,6 +313,7 @@ int main() {
     testWaveletIdentityAtUnitGain();
     testRichardsonLucySharpens();
     testColorStretch();
+    testColorBalanceHueBrightness();
 
     if (g_failures) {
         std::cerr << g_failures << " failure(s)\n";

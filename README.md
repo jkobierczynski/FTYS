@@ -60,7 +60,13 @@ Work through the panel top to bottom:
    instead of relying only on automatic placement.
 5. **Stack** — Mean, Sigma-Clip, or Drizzle.
 6. **Apply Sharpening** — Wavelet or Richardson-Lucy.
-7. **Apply Color Adjustments** — levels, curve, saturation.
+7. **Adjust Color...** opens a full-size histogram/curve editor window —
+   add or remove points directly on the curve (double-click empty space to
+   add, double-click a point to remove, drag to move), tune black/white
+   points and gamma, brightness, color balance (independent red/green/blue
+   gain), hue rotation, and saturation, with the preview updating live as
+   you change anything. **Reset to Defaults** clears every control back to
+   identity.
 8. **Chromatic Aberration** — if the limb/belt edges show red/blue fringing,
    hit **Auto-detect** to estimate a correction, then **Apply CA Correction**.
 9. **Export...** — pick a **Format** (PNG, TIFF, or FITS) and, for TIFF/FITS,
@@ -107,6 +113,16 @@ goes back to the automatic layout.
 **What's the Chromatic Aberration panel for?** Correcting red/blue color
 fringing around the disk's edge caused by the telescope's optics. Auto-detect
 gives you a starting point; nudge the sliders further by eye if needed.
+
+**What can I actually do in the color window?** More than levels and a
+curve. **Levels** (black point, white point, gamma) and the curve editor
+handle the tone stretch; **Brightness & Color Balance** adds a simple
+additive brightness offset plus independent red/green/blue gain (push blue
+up to cool the image, red up to warm it); **Hue & Saturation** lets you
+rotate the whole image's hue around the color wheel in addition to the
+existing saturation control. Everything updates the preview live as you
+change it, and **Reset to Defaults** puts every control back to identity
+in one click.
 
 **The app crashed / ran out of memory.** Lower the "Keep best %" — the
 memory estimate shown next to it tells you roughly how much RAM the kept

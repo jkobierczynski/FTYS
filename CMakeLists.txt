@@ -100,6 +100,7 @@ set(LS_GUI_SOURCES
   src/gui/AlignmentInspectorDialog.cpp
   src/gui/QualityGraphWidget.cpp
   src/gui/QualityInspectorDialog.cpp
+  src/gui/ColorAdjustmentDialog.cpp
   src/gui/PipelineController.cpp
   src/gui/ImageConvert.cpp
   src/gui/resources.qrc

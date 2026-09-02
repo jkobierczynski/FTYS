@@ -59,6 +59,88 @@ ImageBuffer applySaturation(const ImageBuffer& src, const SaturationParams& para
     return out;
 }
 
+ImageBuffer applyColorBalance(const ImageBuffer& src, const ColorBalanceParams& params) {
+    if (src.channels() != 3) return src; // no-op on mono, same convention as applySaturation
+
+    ImageBuffer out(src.width(), src.height(), 3);
+    for (int y = 0; y < src.height(); ++y) {
+        for (int x = 0; x < src.width(); ++x) {
+            out.at(x, y, 0) = std::clamp(src.at(x, y, 0) * params.redGain, 0.0f, 1.0f);
+            out.at(x, y, 1) = std::clamp(src.at(x, y, 1) * params.greenGain, 0.0f, 1.0f);
+            out.at(x, y, 2) = std::clamp(src.at(x, y, 2) * params.blueGain, 0.0f, 1.0f);
+        }
+    }
+    return out;
+}
+
+namespace {
+
+// Minimal RGB<->HSV (all channels in [0,1], hue in degrees) -- just enough
+// to rotate hue while leaving saturation/value numerically alone. Not a
+// general-purpose colorimetric conversion, only used internally here.
+void rgbToHsv(float r, float g, float b, float& h, float& s, float& v) {
+    float maxc = std::max({r, g, b});
+    float minc = std::min({r, g, b});
+    v = maxc;
+    float delta = maxc - minc;
+    s = maxc <= 1e-6f ? 0.0f : delta / maxc;
+    if (delta <= 1e-6f) {
+        h = 0.0f; // achromatic (gray/black) -- hue is undefined, pick 0
+        return;
+    }
+    if (maxc == r) h = std::fmod((g - b) / delta, 6.0f);
+    else if (maxc == g) h = (b - r) / delta + 2.0f;
+    else h = (r - g) / delta + 4.0f;
+    h *= 60.0f;
+    if (h < 0.0f) h += 360.0f;
+}
+
+void hsvToRgb(float h, float s, float v, float& r, float& g, float& b) {
+    float c = v * s;
+    float hp = h / 60.0f;
+    float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+    float m = v - c;
+    float r1 = 0, g1 = 0, b1 = 0;
+    if (hp < 1.0f) { r1 = c; g1 = x; b1 = 0.0f; }
+    else if (hp < 2.0f) { r1 = x; g1 = c; b1 = 0.0f; }
+    else if (hp < 3.0f) { r1 = 0.0f; g1 = c; b1 = x; }
+    else if (hp < 4.0f) { r1 = 0.0f; g1 = x; b1 = c; }
+    else if (hp < 5.0f) { r1 = x; g1 = 0.0f; b1 = c; }
+    else { r1 = c; g1 = 0.0f; b1 = x; }
+    r = r1 + m;
+    g = g1 + m;
+    b = b1 + m;
+}
+
+} // namespace
+
+ImageBuffer applyHueRotation(const ImageBuffer& src, const HueParams& params) {
+    if (src.channels() != 3) return src; // no-op on mono -- hue is meaningless there
+
+    ImageBuffer out(src.width(), src.height(), 3);
+    for (int y = 0; y < src.height(); ++y) {
+        for (int x = 0; x < src.width(); ++x) {
+            float h, s, v;
+            rgbToHsv(src.at(x, y, 0), src.at(x, y, 1), src.at(x, y, 2), h, s, v);
+            h = std::fmod(h + params.hueDegrees, 360.0f);
+            if (h < 0.0f) h += 360.0f;
+            float r, g, b;
+            hsvToRgb(h, s, v, r, g, b);
+            out.at(x, y, 0) = std::clamp(r, 0.0f, 1.0f);
+            out.at(x, y, 1) = std::clamp(g, 0.0f, 1.0f);
+            out.at(x, y, 2) = std::clamp(b, 0.0f, 1.0f);
+        }
+    }
+    return out;
+}
+
+ImageBuffer applyBrightness(const ImageBuffer& src, const BrightnessParams& params) {
+    ImageBuffer out(src.width(), src.height(), src.channels());
+    size_t n = src.sampleCount();
+    for (size_t i = 0; i < n; ++i) out.data()[i] = std::clamp(src.data()[i] + params.brightness, 0.0f, 1.0f);
+    return out;
+}
+
 std::vector<int> computeHistogram(const ImageBuffer& src, int channel, int bins) {
     std::vector<int> hist(bins, 0);
     int w = src.width(), h = src.height();

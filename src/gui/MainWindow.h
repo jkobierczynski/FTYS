@@ -2,9 +2,9 @@
 
 #include "gui/PipelineController.h"
 #include "gui/PreviewWidget.h"
-#include "gui/CurvesWidget.h"
 #include "gui/AlignmentInspectorDialog.h"
 #include "gui/QualityInspectorDialog.h"
+#include "gui/ColorAdjustmentDialog.h"
 
 #include <QMainWindow>
 #include <QLabel>
@@ -32,12 +32,11 @@ private slots:
     void onInspectAlignment();
     void onStack();
     void onSharpen();
-    void onApplyColor();
+    void onAdjustColor();
     void onDetectCA();
     void onApplyCA();
     void onExportFormatChanged(int index);
     void onExport();
-    void onCurveChanged(const std::vector<std::pair<float, float>>& points);
 
     void onSequenceOpened(int width, int height, int frameCount, QString formatDescription);
     void onQualityProgress(int percent);
@@ -95,18 +94,17 @@ private:
     QDoubleSpinBox* rlSigmaSpin_;
     QPushButton* sharpenButton_;
 
-    // Color.
-    QDoubleSpinBox* blackPointSpin_;
-    QDoubleSpinBox* whitePointSpin_;
-    QDoubleSpinBox* gammaSpin_;
-    CurvesWidget* curvesWidget_;
-    QDoubleSpinBox* saturationSpin_;
-    QPushButton* applyColorButton_;
+    // Color -- all the actual controls live in ColorAdjustmentDialog now;
+    // MainWindow just owns the button that opens it and the flag that
+    // drives the sharpen-then-color cascade below.
+    QPushButton* adjustColorButton_;
+    ColorAdjustmentDialog* colorAdjustDialog_ = nullptr; // lazily created
     // Set once color adjustments have been applied at least once; used to
-    // auto-reapply them (with whatever the color widgets currently hold)
-    // after a sharpen (re)run, so redoing Wavelet/Richardson-Lucy doesn't
-    // silently drop a previously-applied histogram/color stretch from the
-    // preview and export.
+    // auto-reapply them (via colorAdjustDialog_->refresh(), which reapplies
+    // whatever settings are currently dialed in there) after a sharpen
+    // (re)run, so redoing Wavelet/Richardson-Lucy doesn't silently drop a
+    // previously-applied histogram/color stretch from the preview and
+    // export.
     bool colorApplied_ = false;
 
     // Chromatic aberration (RGB channel alignment).

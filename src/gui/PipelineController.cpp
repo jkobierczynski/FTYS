@@ -368,16 +368,20 @@ void PipelineController::applySharpen(SharpenMode mode, const WaveletParams& wp,
 }
 
 void PipelineController::applyColor(const LevelsParams& lp, const std::vector<std::pair<float, float>>& curve,
-                                     const SaturationParams& sp) {
+                                     const SaturationParams& sp, const ColorBalanceParams& cbp, const HueParams& hp,
+                                     const BrightnessParams& bp) {
     if (sharpenedResult_.empty()) {
         emit errorOccurred("Apply sharpening first (choose \"None\" to pass the stack through unchanged)");
         return;
     }
-    (void)QtConcurrent::run([this, lp, curve, sp]() {
+    (void)QtConcurrent::run([this, lp, curve, sp, cbp, hp, bp]() {
         try {
             ImageBuffer leveled = applyLevels(sharpenedResult_, lp);
             ImageBuffer curved = curve.size() >= 2 ? applyCurve(leveled, curve) : leveled;
-            finalResult_ = applySaturation(curved, sp);
+            ImageBuffer brightened = applyBrightness(curved, bp);
+            ImageBuffer balanced = applyColorBalance(brightened, cbp);
+            ImageBuffer hued = applyHueRotation(balanced, hp);
+            finalResult_ = applySaturation(hued, sp);
             emit colorDone(imageBufferToQImage(finalResult_));
         } catch (const std::exception& e) {
             emit errorOccurred(QString::fromStdString(e.what()));

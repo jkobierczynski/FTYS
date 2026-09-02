@@ -92,8 +92,14 @@ public:
     void stackMean(const StackParams& params);
     void stackDrizzle(const DrizzleParams& params);
     void applySharpen(SharpenMode mode, const WaveletParams& wp, const RLParams& rp);
+    // Runs, in order: levels (black/white/gamma) -> curve -> brightness ->
+    // color balance (per-channel gain) -> hue rotation -> saturation. The
+    // last three params default-construct to a no-op so existing callers
+    // that only cared about levels/curve/saturation still compile
+    // unchanged. See proc/ColorStretch.h for what each stage does.
     void applyColor(const LevelsParams& lp, const std::vector<std::pair<float, float>>& curve,
-                    const SaturationParams& sp);
+                    const SaturationParams& sp, const ColorBalanceParams& cbp = ColorBalanceParams{},
+                    const HueParams& hp = HueParams{}, const BrightnessParams& bp = BrightnessParams{});
     // Corrects lateral chromatic aberration (color fringing) by resampling
     // the red/blue channels of the *color-adjusted* result by their own
     // small shift, green held fixed as the reference -- see

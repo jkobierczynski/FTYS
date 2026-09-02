@@ -843,7 +843,82 @@ doesn't affect the build or the automated test suite. Anyone wanting to
 re-run those diagnostics needs to point them at their own SER/AVI/FITS
 capture instead.
 
+## Color adjustments: dedicated window, live preview, color balance/hue/brightness
+
+The "Histogram / Color" stage used to be a handful of spin boxes (black
+point, white point, gamma, saturation) plus a small `CurvesWidget`
+squeezed into the side panel behind a manual "Apply Color Adjustments"
+button -- not much room to make a deliberate decision from a histogram,
+and only those four numeric parameters plus the curve to work with. Two
+changes: a real window to work in, and more to work with.
+
+**New window.** All of it now lives in a new `ColorAdjustmentDialog`
+(`src/gui/ColorAdjustmentDialog.h/.cpp`), opened via an "Adjust Color..."
+button in the side panel -- same lazily-created-dialog convention as
+`AlignmentInspectorDialog`/`QualityInspectorDialog` (`MainWindow` just owns
+the button and a `refresh()`-calling lazy pointer). `CurvesWidget` itself
+didn't need any changes -- it already supported exactly what was asked for
+(a histogram backdrop, add a point by double-clicking empty space, remove
+one by double-clicking it, drag to move) -- it just needed room to breathe
+instead of `sizeHint()`'s cramped 320x200 inside a 400-ish-px-wide side
+panel.
+
+**Live preview instead of an Apply button.** Every control (all nine spin
+boxes plus the curve) is wired to a single debounced recompute: any change
+restarts a 150ms single-shot `QTimer`, and only when it actually fires does
+the dialog call `PipelineController::applyColor()` -- coalescing a slider
+drag or a curve-point drag into one recompute after things settle, rather
+than one per mouse-move event. `applyColor()`'s own color-stretch math
+(levels/curve/saturation, now plus brightness/color balance/hue) is all
+simple O(pixels) loops, not FFT-based like alignment, so even an
+uncoalesced recompute would likely be fine, but debouncing costs nothing
+and avoids finding out the hard way on a slower machine. The dialog
+listens to `PipelineController::colorDone` directly (with itself as the
+connection's context object, same thread-safety reasoning as
+`QualityInspectorDialog`'s screenshot-test bug writeup earlier in this
+log: `colorDone` is emitted from a `QtConcurrent` worker thread, and a
+context object is what makes Qt actually queue the slot onto the main
+thread instead of running it inline on the worker) to update its own
+preview -- independent of `MainWindow`, which listens to the exact same
+signal for its own preview/status bar/CA-cascade logic. Both react to one
+`applyColor()` call; neither needs to know about the other.
+
+**New parameters**, all in `proc/ColorStretch.h/.cpp`:
+- `ColorBalanceParams` (`applyColorBalance`): independent red/green/blue
+  multiplicative gain -- classic color balance, clamped to [0,1], no-op on
+  mono (same convention `applySaturation` already used for that case).
+- `HueParams` (`applyHueRotation`): converts each pixel to HSV, rotates
+  the hue angle, converts back -- saturation and value are left
+  numerically alone by construction. Also a no-op on mono, since hue is
+  meaningless for a single channel.
+- `BrightnessParams` (`applyBrightness`): a plain additive offset on every
+  sample, clamped back to [0,1] -- deliberately not exposure/multiplicative,
+  so its effect is easy to reason about next to the levels stretch, which
+  already handles overall exposure.
+
+`PipelineController::applyColor()` grew three new parameters (all
+default-constructing to a no-op, so the existing `manual_pipeline_run`/
+`export_validation`/`test_integration` call sites -- which only ever cared
+about levels/curve/saturation -- compile unchanged) and now runs, in
+order: levels -> curve -> brightness -> color balance -> hue -> saturation.
+Saturation stays last, matching where it already was before this change.
+
+Unit-tested in `tests/test_proc.cpp` (`testColorBalanceHueBrightness`):
+per-channel gain scales and clamps correctly and no-ops on mono; +120
+degrees of hue rotation takes pure red to pure green (exact on the
+standard HSV wheel) and 0 degrees is a no-op; hue is a no-op on mono;
+brightness adds directly in range and clamps at both ends. Also validated
+against real data with a throwaway headless harness (not part of ctest,
+matching this log's usual practice): ran the real pipeline against a
+synthetic Jupiter capture through to a sharpened result, opened the real
+`ColorAdjustmentDialog`, and drove its actual spin boxes (not a
+reimplementation) the same way a user's input would -- screenshotted the
+default (identity) state, then red gain 2.0 + hue 60 degrees (visibly
+turned the disk yellow-green, confirming the new math actually reaches
+the rendered preview, not just that it compiles), then clicked the real
+**Reset to Defaults** button and confirmed the screenshot came back
+byte-identical to the original default state.
+
 ## Next steps
 
 1. Port to Windows and macOS (vcpkg/Conan for dependencies, CI builds).
-2. Live curve-drag preview instead of requiring "Apply".

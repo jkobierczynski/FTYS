@@ -259,27 +259,13 @@ QWidget* MainWindow::buildControlsPanel() {
     // --- Color -----------------------------------------------------------
     auto* colorGroup = new QGroupBox("Histogram / Color");
     auto* colorLayout = new QVBoxLayout(colorGroup);
-    auto* levelsForm = new QFormLayout;
-    blackPointSpin_ = new QDoubleSpinBox; blackPointSpin_->setRange(0.0, 0.99); blackPointSpin_->setSingleStep(0.01); blackPointSpin_->setValue(0.0);
-    whitePointSpin_ = new QDoubleSpinBox; whitePointSpin_->setRange(0.01, 1.0); whitePointSpin_->setSingleStep(0.01); whitePointSpin_->setValue(1.0);
-    gammaSpin_ = new QDoubleSpinBox; gammaSpin_->setRange(0.1, 5.0); gammaSpin_->setSingleStep(0.05); gammaSpin_->setValue(1.0);
-    levelsForm->addRow("Black point:", blackPointSpin_);
-    levelsForm->addRow("White point:", whitePointSpin_);
-    levelsForm->addRow("Gamma:", gammaSpin_);
-    colorLayout->addLayout(levelsForm);
-
-    curvesWidget_ = new CurvesWidget;
-    connect(curvesWidget_, &CurvesWidget::curveChanged, this, &MainWindow::onCurveChanged);
-    colorLayout->addWidget(curvesWidget_);
-
-    auto* satForm = new QFormLayout;
-    saturationSpin_ = new QDoubleSpinBox; saturationSpin_->setRange(0.0, 3.0); saturationSpin_->setSingleStep(0.05); saturationSpin_->setValue(1.0);
-    satForm->addRow("Saturation:", saturationSpin_);
-    colorLayout->addLayout(satForm);
-
-    applyColorButton_ = new QPushButton("Apply Color Adjustments");
-    connect(applyColorButton_, &QPushButton::clicked, this, &MainWindow::onApplyColor);
-    colorLayout->addWidget(applyColorButton_);
+    adjustColorButton_ = new QPushButton("Adjust Color...");
+    adjustColorButton_->setEnabled(false);
+    adjustColorButton_->setToolTip(
+        "Opens a full-size histogram/curve editor -- add or remove curve points, and adjust levels, brightness, "
+        "color balance, hue, and saturation, with the preview updating live as you go.");
+    connect(adjustColorButton_, &QPushButton::clicked, this, &MainWindow::onAdjustColor);
+    colorLayout->addWidget(adjustColorButton_);
     layout->addWidget(colorGroup);
 
     // --- Chromatic aberration ---------------------------------------------
@@ -358,7 +344,7 @@ void MainWindow::setEnabledStageButtons() {
     inspectAlignmentButton_->setEnabled(false);
     stackButton_->setEnabled(false);
     sharpenButton_->setEnabled(false);
-    applyColorButton_->setEnabled(false);
+    adjustColorButton_->setEnabled(false);
     caDetectButton_->setEnabled(false);
     caApplyButton_->setEnabled(false);
     exportButton_->setEnabled(false);
@@ -509,36 +495,32 @@ void MainWindow::onSharpen() {
 
 void MainWindow::onSharpenDone(QImage preview) {
     sharpenButton_->setEnabled(true);
-    applyColorButton_->setEnabled(true);
-    curvesWidget_->setHistogram(controller_->preColorHistogram());
+    adjustColorButton_->setEnabled(true);
     statusBar()->showMessage("Sharpening complete", 5000);
-    if (colorApplied_) {
+    if (colorApplied_ && colorAdjustDialog_) {
         // Histogram/color stretch was already applied before this sharpen
-        // (re)run -- reapply it now with the same widget settings rather
-        // than leaving the preview/export showing the unstretched sharpen
-        // output, which is what re-running Wavelet or Richardson-Lucy used
-        // to do (the stretch stayed computed against the *old* sharpened
-        // result until the user noticed and clicked Apply again).
-        onApplyColor();
+        // (re)run -- refresh() updates the dialog's histogram against the
+        // new sharpened result and reapplies whatever settings are
+        // currently dialed in there (its completion, via colorDone, is
+        // what actually updates the preview below), rather than leaving
+        // the preview/export showing the unstretched sharpen output, which
+        // is what re-running Wavelet or Richardson-Lucy used to do before
+        // this cascade existed.
+        colorAdjustDialog_->refresh();
     } else {
         preview_->setImage(preview);
     }
 }
 
-void MainWindow::onApplyColor() {
-    applyColorButton_->setEnabled(false);
-    statusBar()->showMessage("Applying color adjustments...");
-    LevelsParams lp;
-    lp.blackPoint = static_cast<float>(blackPointSpin_->value());
-    lp.whitePoint = static_cast<float>(whitePointSpin_->value());
-    lp.gamma = static_cast<float>(gammaSpin_->value());
-    SaturationParams sp;
-    sp.saturation = static_cast<float>(saturationSpin_->value());
-    controller_->applyColor(lp, curvesWidget_->controlPoints(), sp);
+void MainWindow::onAdjustColor() {
+    if (!colorAdjustDialog_) colorAdjustDialog_ = new ColorAdjustmentDialog(controller_, this);
+    colorAdjustDialog_->refresh();
+    colorAdjustDialog_->show();
+    colorAdjustDialog_->raise();
+    colorAdjustDialog_->activateWindow();
 }
 
 void MainWindow::onColorDone(QImage preview) {
-    applyColorButton_->setEnabled(true);
     caDetectButton_->setEnabled(true);
     caApplyButton_->setEnabled(true);
     exportButton_->setEnabled(true);
@@ -586,14 +568,6 @@ void MainWindow::onChromaticAberrationDone(QImage preview) {
     caApplied_ = true;
     preview_->setImage(preview);
     statusBar()->showMessage("Chromatic aberration correction applied", 5000);
-}
-
-void MainWindow::onCurveChanged(const std::vector<std::pair<float, float>>&) {
-    // Curve is read directly from curvesWidget_ when "Apply Color
-    // Adjustments" is clicked; live-preview-on-drag is a possible later
-    // enhancement but would mean re-running the color stage on every mouse
-    // move, which is unnecessary work for what is a cheap, fast operation
-    // anyway once the user releases the mouse and clicks Apply.
 }
 
 void MainWindow::onExportFormatChanged(int index) {
