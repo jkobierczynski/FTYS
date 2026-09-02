@@ -5,6 +5,7 @@
 A lucky-imaging stacking app for planets, the Moon, and the Sun. Point it at
 a SER/AVI/FITS capture, and it picks the sharpest frames, aligns them,
 stacks them, sharpens the result, and lets you fine-tune color and color
+fringing before you export it as PNG, TIFF, or FITS (8-bit or 16-bit).
 
 ## Screenshot
 
@@ -13,7 +14,6 @@ stacks them, sharpens the result, and lets you fine-tune color and color
 ## Made with Claude
 
 Made with Claude Sonnet 5 High
-fringing before you export it as PNG, TIFF, or FITS (8-bit or 16-bit).
 
 ## Build (Linux)
 
