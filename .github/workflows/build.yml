@@ -1,0 +1,153 @@
+name: Build
+
+# Builds and tests FTYS on both Linux (apt packages, matching the README's
+# "Build (Linux)" section exactly) and Windows (MSVC + vcpkg + Qt6,
+# matching the README's "Build (Windows)" section -- including the
+# x64-windows-release triplet and the /Zc:__cplusplus, /permissive- MSVC
+# flags CMakeLists.txt already sets, all learned the hard way in
+# docs/DEVELOPMENT.md's real-user-signal log). On a pushed tag like
+# "v0.1.0" it also attaches both platforms' packaged binaries to a GitHub
+# Release.
+#
+# NOTE: adjust the "main" branch name below if this repo's default branch
+# is actually called something else (e.g. "master") -- this workflow
+# silently never triggers on push/PR otherwise.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  linux:
+    name: Linux (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev libopencv-dev libavformat-dev libavcodec-dev \
+            libavutil-dev libswscale-dev libcfitsio-dev libfftw3-dev \
+            libtiff-dev pkg-config build-essential cmake
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          mkdir -p package/ftys-linux-x64
+          cp build/ftys package/ftys-linux-x64/
+          cp README.md LICENSE package/ftys-linux-x64/
+          cat > package/ftys-linux-x64/NOTES.txt <<'EOF'
+          Built on ubuntu-latest, dynamically linked against that image's
+          Qt6/OpenCV/FFmpeg/cfitsio/FFTW3/libtiff package versions. Should
+          run as-is on a matching Ubuntu release; on another distro or an
+          older/newer Ubuntu, missing/mismatched shared library versions
+          may mean building from source instead (see README.md) works
+          better than this binary.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ftys-linux-x64
+          path: package/ftys-linux-x64
+
+  windows:
+    name: Windows (build + test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSVC 2022, not MinGW -- this project's vcpkg-built dependencies
+      # and the app itself are all built with cl.exe, and a MinGW-built Qt
+      # cannot be linked into an MSVC-built program (incompatible C++
+      # ABIs). See docs/DEVELOPMENT.md's sixth/seventh real-user-signal
+      # entries for exactly what goes wrong if this ever regresses.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+
+      # Bootstraps vcpkg and wires up vcpkg's binary caching backed by the
+      # GitHub Actions cache -- without this, every run would rebuild
+      # FFmpeg from source (20-60+ minutes on its own; see
+      # docs/DEVELOPMENT.md's "very slow, expected" entry) instead of
+      # restoring a cached copy after the first successful run.
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+
+      - name: Configure
+        run: >
+          cmake -B build -S .
+          -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows-release
+          -DCMAKE_PREFIX_PATH="${{ env.QT_ROOT_DIR }}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package\ftys-windows-x64 | Out-Null
+          Copy-Item build\Release\ftys.exe package\ftys-windows-x64\
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --compiler-runtime package\ftys-windows-x64\ftys.exe
+          Copy-Item build\vcpkg_installed\x64-windows-release\bin\*.dll package\ftys-windows-x64\
+          Copy-Item README.md, LICENSE package\ftys-windows-x64\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ftys-windows-x64
+          path: package/ftys-windows-x64
+
+  release:
+    name: Attach binaries to release
+    needs: [ linux, windows ]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ftys-linux-x64
+          path: dl/ftys-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: ftys-windows-x64
+          path: dl/ftys-windows-x64
+
+      - name: Zip packages
+        run: |
+          sudo apt-get update && sudo apt-get install -y zip
+          (cd dl/ftys-linux-x64 && zip -r ../../ftys-linux-x64.zip .)
+          (cd dl/ftys-windows-x64 && zip -r ../../ftys-windows-x64.zip .)
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ftys-linux-x64.zip
+            ftys-windows-x64.zip
