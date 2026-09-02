@@ -24,6 +24,7 @@ pkg_check_modules(AVUTIL REQUIRED libavutil)
 pkg_check_modules(SWSCALE REQUIRED libswscale)
 pkg_check_modules(CFITSIO REQUIRED cfitsio)
 pkg_check_modules(FFTW3 REQUIRED fftw3)
+pkg_check_modules(TIFF REQUIRED libtiff-4)
 
 find_package(Threads REQUIRED)
 
@@ -44,16 +45,17 @@ add_library(ls_io STATIC
   src/io/AviReader.cpp
   src/io/FitsReader.cpp
   src/io/FrameSourceFactory.cpp
+  src/io/ImageWriter.cpp
 )
 target_include_directories(ls_io PUBLIC src
   ${AVFORMAT_INCLUDE_DIRS} ${AVCODEC_INCLUDE_DIRS} ${AVUTIL_INCLUDE_DIRS} ${SWSCALE_INCLUDE_DIRS}
-  ${CFITSIO_INCLUDE_DIRS})
+  ${CFITSIO_INCLUDE_DIRS} ${TIFF_INCLUDE_DIRS})
 target_link_libraries(ls_io PUBLIC ls_core
   ${AVFORMAT_LIBRARIES} ${AVCODEC_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES}
-  ${CFITSIO_LIBRARIES})
+  ${CFITSIO_LIBRARIES} ${TIFF_LIBRARIES})
 target_link_directories(ls_io PUBLIC
   ${AVFORMAT_LIBRARY_DIRS} ${AVCODEC_LIBRARY_DIRS} ${AVUTIL_LIBRARY_DIRS} ${SWSCALE_LIBRARY_DIRS}
-  ${CFITSIO_LIBRARY_DIRS})
+  ${CFITSIO_LIBRARY_DIRS} ${TIFF_LIBRARY_DIRS})
 target_compile_options(ls_io PRIVATE -Wall -Wextra)
 
 # ---------------------------------------------------------------------------
@@ -96,6 +98,8 @@ set(LS_GUI_SOURCES
   src/gui/PreviewWidget.cpp
   src/gui/CurvesWidget.cpp
   src/gui/AlignmentInspectorDialog.cpp
+  src/gui/QualityGraphWidget.cpp
+  src/gui/QualityInspectorDialog.cpp
   src/gui/PipelineController.cpp
   src/gui/ImageConvert.cpp
   src/gui/resources.qrc

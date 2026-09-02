@@ -4,6 +4,7 @@
 #include "gui/PreviewWidget.h"
 #include "gui/CurvesWidget.h"
 #include "gui/AlignmentInspectorDialog.h"
+#include "gui/QualityInspectorDialog.h"
 
 #include <QMainWindow>
 #include <QLabel>
@@ -26,6 +27,7 @@ private slots:
     void onOpenSequence();
     void onAssessQuality();
     void onPercentChanged(int value);
+    void onInspectQuality();
     void onAlign();
     void onInspectAlignment();
     void onStack();
@@ -33,6 +35,7 @@ private slots:
     void onApplyColor();
     void onDetectCA();
     void onApplyCA();
+    void onExportFormatChanged(int index);
     void onExport();
     void onCurveChanged(const std::vector<std::pair<float, float>>& points);
 
@@ -63,6 +66,8 @@ private:
     QPushButton* assessButton_;
     QLabel* selectionLabel_;
     bool qualityReady_ = false;
+    QPushButton* inspectQualityButton_;
+    QualityInspectorDialog* qualityInspector_ = nullptr; // lazily created
 
     // Alignment.
     QPushButton* alignButton_;
@@ -120,6 +125,8 @@ private:
     bool caApplied_ = false;
 
     // Export.
+    QComboBox* exportFormatCombo_;    // PNG / TIFF / FITS
+    QComboBox* exportBitDepthCombo_;  // 8-bit / 16-bit -- disabled (forced 8-bit) when format is PNG
     QPushButton* exportButton_;
 
     QProgressBar* progressBar_;

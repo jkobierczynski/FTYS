@@ -97,6 +97,17 @@ QWidget* MainWindow::buildControlsPanel() {
 
     selectionLabel_ = new QLabel("");
     selLayout->addWidget(selectionLabel_);
+
+    inspectQualityButton_ = new QPushButton("View Quality Graph...");
+    inspectQualityButton_->setEnabled(false);
+    inspectQualityButton_->setToolTip(
+        "Shows every scored frame's sharpness as a sorted bar graph (sharpest "
+        "to softest), colored by whether it's kept at the current \"keep best "
+        "%\", with a slider (or click/drag directly on the graph) to scrub "
+        "through and preview any frame alongside its score.");
+    connect(inspectQualityButton_, &QPushButton::clicked, this, &MainWindow::onInspectQuality);
+    selLayout->addWidget(inspectQualityButton_);
+
     layout->addWidget(selGroup);
 
     // --- Alignment -------------------------------------------------------
@@ -308,7 +319,30 @@ QWidget* MainWindow::buildControlsPanel() {
     // --- Export ------------------------------------------------------------
     auto* exportGroup = new QGroupBox("Export");
     auto* exportLayout = new QVBoxLayout(exportGroup);
-    exportButton_ = new QPushButton("Export PNG...");
+
+    auto* formatRow = new QWidget;
+    auto* formatRowLayout = new QFormLayout(formatRow);
+    exportFormatCombo_ = new QComboBox;
+    exportFormatCombo_->addItems({"PNG", "TIFF", "FITS"});
+    formatRowLayout->addRow("Format:", exportFormatCombo_);
+    exportLayout->addWidget(formatRow);
+
+    auto* bitDepthRow = new QWidget;
+    auto* bitDepthRowLayout = new QFormLayout(bitDepthRow);
+    exportBitDepthCombo_ = new QComboBox;
+    exportBitDepthCombo_->addItems({"8-bit", "16-bit"});
+    exportBitDepthCombo_->setEnabled(false); // PNG is the initial format, and is always 8-bit
+    exportBitDepthCombo_->setToolTip(
+        "PNG is always 8-bit. TIFF and FITS can be written at full 16-bit "
+        "precision instead of the internal float pipeline being rounded "
+        "down to 8-bit on export.");
+    bitDepthRowLayout->addRow("Bit depth:", exportBitDepthCombo_);
+    exportLayout->addWidget(bitDepthRow);
+
+    connect(exportFormatCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &MainWindow::onExportFormatChanged);
+
+    exportButton_ = new QPushButton("Export...");
     connect(exportButton_, &QPushButton::clicked, this, &MainWindow::onExport);
     exportLayout->addWidget(exportButton_);
     layout->addWidget(exportGroup);
@@ -319,6 +353,7 @@ QWidget* MainWindow::buildControlsPanel() {
 
 void MainWindow::setEnabledStageButtons() {
     assessButton_->setEnabled(false);
+    inspectQualityButton_->setEnabled(false);
     alignButton_->setEnabled(false);
     inspectAlignmentButton_->setEnabled(false);
     stackButton_->setEnabled(false);
@@ -364,9 +399,15 @@ void MainWindow::onQualityProgress(int percent) {
 void MainWindow::onQualityDone(int totalFrames) {
     qualityReady_ = true;
     assessButton_->setEnabled(true);
+    inspectQualityButton_->setEnabled(true);
     statusBar()->showMessage(QString("Quality assessed for %1 frames").arg(totalFrames), 5000);
     controller_->selectPercent(percentSlider_->value());
     alignButton_->setEnabled(true);
+    // A freshly (re-)computed quality pass invalidates any graph an already-
+    // open inspector is showing -- refresh it in place rather than leaving
+    // it stale, same convention as onAlignDone() does for the alignment
+    // inspector.
+    if (qualityInspector_) qualityInspector_->refresh();
 }
 
 void MainWindow::onPercentChanged(int value) {
@@ -379,6 +420,21 @@ void MainWindow::onSelectionChanged(int keptCount, int totalScored, double estim
                            ? QString(" -- ~%1 MB, consider a lower percentage").arg(estimatedMegabytes, 0, 'f', 0)
                            : QString(" (~%1 MB)").arg(estimatedMegabytes, 0, 'f', 0);
     selectionLabel_->setText(QString("Keeping %1 of %2 frames%3").arg(keptCount).arg(totalScored).arg(memNote));
+    // "Keep best %" changed the kept/not-kept boundary -- recolor an
+    // already-open graph immediately rather than only on the next full
+    // quality pass, so dragging the percent slider visibly moves the
+    // cutoff line in real time. refreshSelection() (not refresh()) so this
+    // doesn't yank the user's current scrub position back to rank 0 every
+    // time the slider ticks.
+    if (qualityInspector_) qualityInspector_->refreshSelection();
+}
+
+void MainWindow::onInspectQuality() {
+    if (!qualityInspector_) qualityInspector_ = new QualityInspectorDialog(controller_, this);
+    qualityInspector_->refresh();
+    qualityInspector_->show();
+    qualityInspector_->raise();
+    qualityInspector_->activateWindow();
 }
 
 void MainWindow::onAlign() {
@@ -540,11 +596,43 @@ void MainWindow::onCurveChanged(const std::vector<std::pair<float, float>>&) {
     // anyway once the user releases the mouse and clicks Apply.
 }
 
+void MainWindow::onExportFormatChanged(int index) {
+    // PNG (index 0) is always 8-bit; TIFF/FITS (1, 2) can go either way.
+    bool canChooseBitDepth = index != 0;
+    exportBitDepthCombo_->setEnabled(canChooseBitDepth);
+    if (!canChooseBitDepth) exportBitDepthCombo_->setCurrentIndex(0);
+}
+
 void MainWindow::onExport() {
-    QString path = QFileDialog::getSaveFileName(this, "Export Image", QString(), "PNG Image (*.png)");
+    ExportFormat format = ExportFormat::PNG;
+    QString filter = "PNG Image (*.png)";
+    QString suffix = "png";
+    switch (exportFormatCombo_->currentIndex()) {
+        case 1:
+            format = ExportFormat::TIFF;
+            filter = "TIFF Image (*.tif *.tiff)";
+            suffix = "tif";
+            break;
+        case 2:
+            format = ExportFormat::FITS;
+            filter = "FITS Image (*.fits *.fit *.fts)";
+            suffix = "fits";
+            break;
+        default:
+            break;
+    }
+
+    QFileDialog dialog(this, "Export Image");
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setNameFilter(filter);
+    dialog.setDefaultSuffix(suffix);
+    if (dialog.exec() != QDialog::Accepted) return;
+    QString path = dialog.selectedFiles().value(0);
     if (path.isEmpty()) return;
-    if (!path.endsWith(".png", Qt::CaseInsensitive)) path += ".png";
-    bool ok = controller_->exportImage(path);
+
+    ExportBitDepth bitDepth =
+        (exportBitDepthCombo_->currentIndex() == 1) ? ExportBitDepth::Sixteen : ExportBitDepth::Eight;
+    bool ok = controller_->exportImage(path, format, bitDepth);
     statusBar()->showMessage(ok ? "Exported " + path : "Export failed", 5000);
     if (!ok) QMessageBox::warning(this, "Export failed", "Could not write image to " + path);
 }

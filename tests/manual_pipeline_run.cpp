@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
         qInfo() << "qualityDone" << total << "at" << timer.elapsed() << "ms";
         reportMem("quality-done");
 
-        auto scores = controller->qualityScoresDebug();
+        auto scores = controller->qualityScores();
         std::sort(scores.begin(), scores.end(), [](const ls::FrameQuality& a, const ls::FrameQuality& b) {
             return a.score > b.score;
         });

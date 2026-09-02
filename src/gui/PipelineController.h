@@ -2,6 +2,7 @@
 
 #include "core/FrameSource.h"
 #include "core/ImageBuffer.h"
+#include "io/ImageWriter.h"
 #include "proc/QualityMetric.h"
 #include "proc/FrameSelector.h"
 #include "proc/Alignment.h"
@@ -108,7 +109,14 @@ public:
     // the sharpened or stacked result if color hasn't run yet), used to
     // pre-fill the manual sliders with a reasonable starting point.
     ChromaticAberrationParams detectCA() const;
-    bool exportImage(const QString& path) const;
+    // Writes the CA-corrected result if one exists, else the plain
+    // color-adjusted result, to `path`. PNG is always 8-bit (bitDepth is
+    // ignored); TIFF and FITS honor bitDepth -- see io/ImageWriter.h for
+    // the on-disk conventions (FITS in particular: NAXIS=2 mono or
+    // NAXIS=3/NAXIS3=3 planar RGB, matching FitsReader's own read
+    // convention so a round trip through FTYS reads back correctly).
+    bool exportImage(const QString& path, ExportFormat format = ExportFormat::PNG,
+                      ExportBitDepth bitDepth = ExportBitDepth::Eight) const;
 
     // Quick synchronous decode of a single frame, used only to show
     // something in the preview immediately after opening a sequence, before
@@ -147,11 +155,13 @@ public:
     // visible one frame at a time.
     QImage alignedFramePreview(int pos) const;
 
-    // Read-only diagnostic access to the per-frame quality scores computed
-    // by the last computeQuality() run -- used by manual_pipeline_run /
-    // wavelet_diagnostic to sanity-check the quality metric and selection
-    // against real capture files, not needed by MainWindow itself.
-    const std::vector<FrameQuality>& qualityScoresDebug() const { return qualityScores_; }
+    // Read-only access to the per-frame quality scores computed by the
+    // last computeQuality() run, in original sequence order (index order,
+    // not sorted by score). Used by manual_pipeline_run/wavelet_diagnostic
+    // to sanity-check the quality metric against real capture files, and
+    // by the GUI's Quality Inspector (see QualityInspectorDialog) to draw
+    // the sorted quality graph and scrub preview.
+    const std::vector<FrameQuality>& qualityScores() const { return qualityScores_; }
     const MultiPointAlignmentResult& alignmentDebug() const { return alignment_; }
 
 signals:

@@ -659,8 +659,191 @@ The full pipeline (open -> quality -> select -> align -> stack -> sharpen
 944x632 result with a visibly correct (if auto-detect-underestimated)
 color fringe.
 
+## Quality Inspector: sorted sharpness graph with a scrub preview
+
+Added a "View Quality Graph..." button to Frame Selection, opening a new
+`QualityInspectorDialog` (`src/gui/QualityInspectorDialog.h/.cpp`), backed
+by a new reusable `QualityGraphWidget` (`src/gui/QualityGraphWidget.h/.cpp`)
+following the same custom-painted-widget convention as `CurvesWidget`
+(dark background, dotted grid, `kMargin = 12`).
+
+`PipelineController::qualityScoresDebug()` was renamed to `qualityScores()`
+and its doc comment updated -- it's no longer just a diagnostic accessor
+for `manual_pipeline_run`/`wavelet_diagnostic`, the GUI now depends on it
+too. `QualityInspectorDialog::refresh()` copies that (original-index-order)
+vector and `std::stable_sort`s it descending by score -- deliberately the
+same comparator `selectTopPercent` (FrameSelector.cpp) uses internally, so
+`rank < keptCount` in the dialog always agrees with which original frames
+`selectPercent()` actually kept, without the dialog needing to duplicate
+`selectTopPercent`'s own logic or ask the controller to expose it. That one
+sorted vector (`sorted_`) is the single ordering shared by the graph, the
+slider/spin box, and the frame preview -- "rank" means the same position
+in all three.
+
+`QualityGraphWidget` just draws whatever vector it's handed in the order
+it's handed (it doesn't sort or know about "kept" beyond a `keptCount`
+integer boundary) -- a green/gray bar chart with a dashed cutoff line at
+`keptCount` and a bright yellow scrub cursor, plus a `rankClicked(int)`
+signal so clicking or dragging directly on the graph moves the dialog's
+own slider (not just the other way around).
+
+Two refresh paths, not one, because they need different side effects:
+`refresh()` (called after a genuinely new `computeQuality()` pass) resets
+the scrub position back to rank 0 and re-fits the preview, since the whole
+distribution -- and what each rank even refers to -- may have changed, same
+convention as `AlignmentInspectorDialog::refresh()`. `refreshSelection()`
+(called after `selectPercent()` alone, i.e. the "Keep best %" slider moved
+but the scores didn't) only recolors the graph's kept/not-kept boundary and
+updates the info line, leaving the current scrub position and preview
+zoom alone -- an early version called `refresh()` from both paths and it
+was genuinely disruptive: dragging the percent slider while the dialog was
+open kept yanking the view back to rank 0 and re-fitting the zoom on every
+tick. `MainWindow::onSelectionChanged` (which fires on every percent-slider
+tick) calls `refreshSelection()`; `onQualityDone` calls the full `refresh()`.
+
+The preview reuses the same fitInView-before-layout-is-ready fix as
+`AlignmentInspectorDialog` (`showEvent()` + a deferred `QTimer::singleShot(0,
+...)`, `fitDone_` guard) -- copied deliberately rather than re-derived, since
+that exact bug (zoomed-out-on-first-open) was already hunted down once for
+the alignment inspector.
+
+Verified headlessly against the synthetic Jupiter capture (not part of
+ctest): confirmed the slider/spin box range matches the frame count,
+confirmed a graph `rankClicked` signal moves the spin box (and therefore
+the slider, via their existing sync connection), confirmed the info label
+reports the same original frame index and score as an independently
+computed sort for a specific rank, and confirmed `refreshSelection()` after
+a stricter `selectPercent()` call updates a rank's kept/not-kept text
+without moving the scrub position away from where the user left it. A
+rendered screenshot of the dialog against the synthetic capture (sharpest
+frame, index 36, at rank 0) showed the expected sorted green-to-gray bar
+shape with the cutoff and cursor lines in the right places.
+
+## FITS/TIFF export and 16-bit output
+
+Export previously only wrote 8-bit PNG via Qt's own `QImage::save()`. Added
+a new `io/ImageWriter.h/.cpp` module (CFITSIO and libtiff directly, not
+through Qt) so TIFF and FITS can be written at the internal pipeline's full
+float precision instead of always being rounded down to 8-bit, and added
+FITS as an export format alongside PNG/TIFF. The Export panel now has a
+**Format** combo (PNG/TIFF/FITS) and a **Bit depth** combo (8-bit/16-bit);
+the bit-depth combo is disabled and forced to 8-bit whenever PNG is
+selected (`MainWindow::onExportFormatChanged`), since Qt's PNG writer,
+which PNG export still goes through unchanged, doesn't offer 16-bit output.
+`ImageWriter::writeImage()` deliberately doesn't handle
+`ExportFormat::PNG` at all (returns false) -- that format stays on the
+pre-existing `imageBufferToQImage(...).save(path)` path in
+`PipelineController::exportImage()`, which now takes `ExportFormat` and
+`ExportBitDepth` parameters (both defaulted, so the existing
+`manual_pipeline_run`/`test_integration` call sites that just pass a path
+still compile unchanged).
+
+Quantization for TIFF/FITS follows the same clamp-to-[0,1]-and-rescale
+convention `imageBufferToQImage` already uses for PNG (not a per-image
+min/max renormalization) -- "what you see in the preview is what gets
+written," just at 8 or 16 bits instead of always 8.
+
+FITS output mirrors `FitsReader`'s own read convention exactly, since that
+class already existed and its layout wasn't going to change to suit a new
+writer: NAXIS=2 for a mono frame, or NAXIS=3 with NAXIS3=3 for RGB stored
+as three separate planes (not interleaved) -- confirmed by reading
+`FitsReader.h`/`.cpp` before writing a single line of the writer. 16-bit
+FITS is written via CFITSIO's `USHORT_IMG`/`TUSHORT`, which sets
+BZERO=32768/BSCALE=1 automatically (the standard "unsigned 16-bit via a
+signed-16 container" FITS convention) rather than native signed BITPIX=16
+-- confirmed against `/usr/include/fitsio.h` and cross-checked with
+`astropy.io.fits` during validation (below), which read back exactly that
+header shape unprompted. TIFF tags are set explicitly rather than left to
+libtiff defaults: `SAMPLEFORMAT_UINT`, `PHOTOMETRIC_MINISBLACK` (mono) or
+`PHOTOMETRIC_RGB` (color), `PLANARCONFIG_CONTIG`, `ORIENTATION_TOPLEFT`,
+and `BITSPERSAMPLE` of 8 or 16 depending on the requested depth.
+
+New dependency: `libtiff-4` (pkg-config), matching the project's existing
+pattern of pulling in CFITSIO/FFTW3 the same way; added to
+`CMakeLists.txt`'s `ls_io` target and to the Linux build dependency list
+in the README (`libtiff-dev`).
+
+Validated with a new headless harness, `tests/export_validation.cpp` (not
+part of ctest, same convention as `manual_pipeline_run`/`inspector_verify`)
+run against the synthetic Jupiter capture through the real pipeline
+(open -> quality -> select -> align -> stack -> sharpen -> color), then
+exporting all five meaningful combinations (PNG-8, TIFF-8, TIFF-16,
+FITS-8, FITS-16) and checking each file actually exists and is non-empty.
+The two FITS files were round-tripped back through the project's own
+`FitsReader` and spot-checked against the source preview (max pixel
+deviation 2.9e-8 for 8-bit, 0.0019 for 16-bit -- both consistent with
+quantization, not a bug). That alone only proves the writer and reader
+agree with *each other*, though, so the same files were independently
+checked with tools that have nothing to do with this codebase:
+`tifffile`/ImageMagick `identify` on the TIFF files confirmed genuine
+16-bit-per-channel storage (`identify` reported `Depth: 16-bit`; `tifffile`
+read back `dtype=uint16` with values scaled ~257x versus the 8-bit export,
+as expected for 255->65535 range quantization of the same source data),
+and `astropy.io.fits` on the FITS files independently confirmed
+NAXIS=3/NAXIS1=531/NAXIS2=506/NAXIS3=3, BITPIX=8 (no BZERO/BSCALE) for the
+8-bit file and BITPIX=16/BZERO=32768/BSCALE=1 for the 16-bit file exactly
+as designed. Finally, the TIFF-8 and FITS-8 outputs (both quantizing the
+*same* source buffer to 8-bit, just through different libraries) were
+compared pixel-for-pixel after reordering FITS's plane-major layout to
+interleaved -- an exact match (max abs diff 0), which is the strongest
+evidence the plane-order/channel-order convention is consistent across
+both writers, not just internally self-consistent.
+
+## Quality Graph: logarithmic scale
+
+Quality scores (Laplacian variance) commonly span a couple of orders of
+magnitude between the sharpest frames in a capture and the softest -- on
+the graph's original linear scale that squashes almost the whole
+distribution, including the "keep best %" cutoff region (which usually
+sits well below the very best frames, not near them), down near the
+bottom axis where it's hard to read. Added a **Logarithmic scale**
+checkbox next to the existing legend line in `QualityInspectorDialog`,
+wired straight to a new `QualityGraphWidget::setLogScale(bool)` --
+deliberately a separate call from `setData()` rather than a parameter to
+it, so toggling the checkbox doesn't require re-supplying the (unchanged)
+score vector and the setting persists naturally across `refresh()`/
+`refreshSelection()` calls.
+
+The mapping itself needs a positive floor, since zero (and any measured
+score at or below it) has no `log10`. Rather than a fixed floor picked
+out of thin air, `paintEvent()` now also tracks the smallest *positive*
+score in the data while it's already looping over every entry for
+`maxScore`, and uses that as the floor -- so the chart always uses its
+full vertical range for whatever dynamic range a given capture actually
+has, instead of leaving most of a low-dynamic-range capture's bars
+bunched near the top or a high-dynamic-range one's bars bunched near the
+bottom. Falls back to a fixed three-decade floor below the max
+(`maxScore * 1e-3`) only in the degenerate cases where that adaptive
+floor doesn't make sense: every score non-positive, or every score
+identical (so no distinct "smallest positive" exists below the max). A
+small "log scale" label is drawn in the corner of the plot when it's
+active, since the bar shapes alone don't otherwise announce which mode
+is showing.
+
+Validated with a throwaway headless harness (grabbing the real
+`QualityInspectorDialog` widget, not a reimplementation) against the
+synthetic Jupiter capture: computed quality, selected the best 20%,
+rendered the dialog, screenshotted it, ticked the checkbox in code the
+same way a user's click would, and screenshotted again. The two
+renders showed visibly different bar shapes for the same underlying
+data -- the log render kept the softer end of the distribution well
+above zero height where the linear render had it pressed flat against
+the axis -- confirming the toggle actually changes what's drawn rather
+than just compiling.
+
+## Removed the bundled synthetic Jupiter capture
+
+The `sample_capture/synth_jupiter.avi` test asset (used throughout this
+log for headless validation runs) has been removed from the source
+package to keep it smaller -- it was never referenced by the build
+(CMakeLists.txt), the app itself, or any doc, only ever passed as a
+command-line argument to the manual/non-ctest diagnostic executables
+(`manual_pipeline_run`, `export_validation`, etc.), so removing it
+doesn't affect the build or the automated test suite. Anyone wanting to
+re-run those diagnostics needs to point them at their own SER/AVI/FITS
+capture instead.
+
 ## Next steps
 
 1. Port to Windows and macOS (vcpkg/Conan for dependencies, CI builds).
-2. 16-bit export (TIFF/FITS).
-3. Live curve-drag preview instead of requiring "Apply".
+2. Live curve-drag preview instead of requiring "Apply".

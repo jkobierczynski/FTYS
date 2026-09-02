@@ -5,7 +5,6 @@
 A lucky-imaging stacking app for planets, the Moon, and the Sun. Point it at
 a SER/AVI/FITS capture, and it picks the sharpest frames, aligns them,
 stacks them, sharpens the result, and lets you fine-tune color and color
-fringing before you export a PNG.
 
 ## Screenshot
 
@@ -14,12 +13,13 @@ fringing before you export a PNG.
 ## Made with Claude
 
 Made with Claude Sonnet 5 High
+fringing before you export it as PNG, TIFF, or FITS (8-bit or 16-bit).
 
 ## Build (Linux)
 
 ```
 sudo apt-get install qt6-base-dev libopencv-dev libavformat-dev libavcodec-dev \
-    libavutil-dev libswscale-dev libcfitsio-dev libfftw3-dev pkg-config build-essential cmake
+    libavutil-dev libswscale-dev libcfitsio-dev libfftw3-dev libtiff-dev pkg-config build-essential cmake
 
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -36,9 +36,18 @@ the [FAQ](#faq) below.
 Work through the panel top to bottom:
 
 1. **Open Sequence** (File menu) — load a `.ser`, `.avi`, or `.fits`/`.fit` capture.
-2. **Assess Quality** — scores every frame for sharpness.
+2. **Assess Quality** — scores every frame for sharpness. **View Quality
+   Graph...** shows every frame's score sorted sharpest-to-softest, colored
+   by whether it's kept at the current "Keep best %" (with a dashed line
+   at the cutoff), and lets you scrub through them — via the slider, or by
+   clicking/dragging right on the graph — to preview any specific frame
+   alongside its score. Tick **Logarithmic scale** if the drop-off from the
+   sharpest frames is so steep it flattens the rest of the graph — it
+   redraws the same bars on a log10 scale so the "keep best %" cutoff
+   region stays readable instead of being squashed near the bottom.
 3. **Keep best %** — pick what fraction of frames to keep (the estimated
-   memory use updates live, so you can back off before it gets too high).
+   memory use updates live, so you can back off before it gets too high;
+   the quality graph's cutoff line and coloring move with it too).
 4. **Align Selected Frames** — tracks several points across the disk and
    aligns each frame to them. "Box size", "Number of boxes" (up to 50), and
    "Max deviation" tune how that tracking works; the defaults are a good
@@ -54,7 +63,9 @@ Work through the panel top to bottom:
 7. **Apply Color Adjustments** — levels, curve, saturation.
 8. **Chromatic Aberration** — if the limb/belt edges show red/blue fringing,
    hit **Auto-detect** to estimate a correction, then **Apply CA Correction**.
-9. **Export PNG...**
+9. **Export...** — pick a **Format** (PNG, TIFF, or FITS) and, for TIFF/FITS,
+   a **Bit depth** (8-bit or 16-bit; PNG is always 8-bit, so the bit-depth
+   picker is disabled whenever PNG is selected).
 
 Re-running an earlier step (e.g. re-sharpening) automatically re-applies
 anything you'd already done downstream of it, so you don't lose a color
@@ -69,6 +80,14 @@ since that's how planetary capture AVIs are actually produced).
 **What can I point it at?** Anything that's a small bright disk on a mostly
 dark background — planets, the Moon, the Sun (with proper solar filtering
 on your equipment, obviously). It auto-detects the disk and crops to it.
+
+**How do I tell if my capture actually needs a lower "Keep best %"?** Open
+**View Quality Graph...** — a steep drop-off from the sharpest frames to
+the rest means seeing was inconsistent and a lower percentage will help a
+lot; a fairly flat graph means most frames are similar quality and the
+percentage matters less. If the sharpest few frames dominate the graph and
+squash everything else flat, tick **Logarithmic scale** to see the shape
+of the rest of the distribution.
 
 **What are the alignment "boxes"?** Small tracking patches placed
 automatically on the sharpest, highest-contrast parts of the disk (belt
@@ -93,7 +112,12 @@ gives you a starting point; nudge the sliders further by eye if needed.
 memory estimate shown next to it tells you roughly how much RAM the kept
 frames will use before you commit to stacking them.
 
-**Can I export 16-bit?** Not yet — export is 8-bit PNG only for now.
+**Can I export 16-bit?** Yes — pick TIFF or FITS as the export **Format**
+and 16-bit as the **Bit depth**. PNG stays 8-bit only (Qt's PNG writer,
+which the app uses for that format, doesn't offer full 16-bit output).
+FITS output uses the same NAXIS=2 (mono) / NAXIS=3, NAXIS3=3 (planar RGB)
+layout the app's own FITS reader expects, so a FITS export round-trips
+back into FTYS correctly.
 
 **Does it run on Windows or macOS?** Not tested yet; the code has nothing
 Linux-specific in it, but the packaging/build work for those platforms

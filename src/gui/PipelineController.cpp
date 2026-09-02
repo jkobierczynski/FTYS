@@ -411,10 +411,16 @@ ChromaticAberrationParams PipelineController::detectCA() const {
     return ChromaticAberrationParams{};
 }
 
-bool PipelineController::exportImage(const QString& path) const {
+bool PipelineController::exportImage(const QString& path, ExportFormat format, ExportBitDepth bitDepth) const {
     const ImageBuffer& out = !chromaticAberrationResult_.empty() ? chromaticAberrationResult_ : finalResult_;
     if (out.empty()) return false;
-    return imageBufferToQImage(out).save(path);
+    if (format == ExportFormat::PNG) {
+        // PNG stays on the pre-existing QImage path -- always 8-bit,
+        // bitDepth ignored -- rather than routing through writeImage(),
+        // which doesn't handle PNG at all (see io/ImageWriter.h).
+        return imageBufferToQImage(out).save(path);
+    }
+    return writeImage(out, path.toStdString(), format, bitDepth);
 }
 
 QImage PipelineController::previewFrame(int index) const {
