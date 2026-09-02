@@ -7,9 +7,11 @@ a SER/AVI/FITS capture, and it picks the sharpest frames, aligns them,
 stacks them, sharpens the result, and lets you fine-tune color and color
 fringing before you export it as PNG, TIFF, or FITS (8-bit or 16-bit).
 
-## Screenshot
+## Screenshots
 
 ![FTYS](FTYS-screenshot.jpg)
+
+![FTYS](FTYS-screenshot2.jpg)
 
 ## Made with Claude
 
