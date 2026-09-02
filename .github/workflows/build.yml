@@ -124,10 +124,24 @@ jobs:
         with:
           vcpkgDirectory: '${{ github.workspace }}/vcpkg'
 
+      # Deliberately no -G/generator name here (an earlier version of this
+      # workflow hardcoded "Visual Studio 17 2022" and broke the moment
+      # GitHub's windows-latest runner image moved to Visual Studio 2026
+      # in mid-2026 -- CMake's generator name is tied to the exact VS
+      # version and doesn't survive a runner image upgrade). Letting CMake
+      # auto-detect whichever VS is actually installed -- exactly what the
+      # README's own local build instructions already do, and what
+      # actually works on the maintainer's own machine -- is what keeps
+      # this from going stale again at the next runner image bump. -A x64
+      # is kept explicit, though: unlike the generator name, -A/--platform
+      # isn't tied to a specific VS version, and applies to whichever
+      # generator CMake ends up auto-selecting -- without it, an omitted
+      # -A can default to a 32-bit configuration, which wouldn't link
+      # against the x64-windows-release vcpkg libraries below.
       - name: Configure
         run: >
           cmake -B build -S .
-          -G "Visual Studio 17 2022" -A x64
+          -A x64
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
           -DVCPKG_TARGET_TRIPLET=x64-windows-release
