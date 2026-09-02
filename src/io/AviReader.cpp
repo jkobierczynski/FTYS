@@ -1,6 +1,7 @@
 #include "io/AviReader.h"
 
 #include <stdexcept>
+#include <string>
 
 extern "C" {
 #include <libavformat/avformat.h>

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
+#include <string>
 
 namespace ls {
 

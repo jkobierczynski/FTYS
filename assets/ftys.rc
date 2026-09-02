@@ -1,0 +1,7 @@
+// Windows resource script: gives ftys.exe a real taskbar/Explorer icon
+// instead of the generic default one. Only consumed when building with
+// WIN32 (see CMakeLists.txt, which adds this file to the ftys executable's
+// sources only `if(WIN32)`) -- ignored entirely on Linux/macOS, where the
+// app icon instead comes from assets/ftys_logo.png via gui/resources.qrc
+// and QApplication::setWindowIcon() in app/main.cpp.
+IDI_ICON1 ICON "ftys.ico"

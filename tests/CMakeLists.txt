@@ -17,6 +17,11 @@ if(TARGET ls_gui)
   # against a real capture file with per-stage memory reporting.
   add_executable(manual_pipeline_run manual_pipeline_run.cpp)
   target_link_libraries(manual_pipeline_run PRIVATE ls_gui ls_core ls_io ls_proc Qt6::Core Qt6::Gui Qt6::Concurrent)
+  if(WIN32)
+    # vmRssKb()'s Windows branch calls GetProcessMemoryInfo(), which lives
+    # in psapi.lib -- not linked by default.
+    target_link_libraries(manual_pipeline_run PRIVATE psapi)
+  endif()
 
   add_executable(wavelet_diagnostic wavelet_diagnostic.cpp)
   target_link_libraries(wavelet_diagnostic PRIVATE ls_core ls_proc Qt6::Gui)

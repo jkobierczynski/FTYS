@@ -11,8 +11,11 @@ instead.
 
 Core engine and Qt GUI are implemented and passing an automated test suite
 (io format readers, every processing algorithm, and a full headless
-integration run of the pipeline). Built and verified on Linux only so far;
-Windows/macOS have not yet been attempted (see Known limitations).
+integration run of the pipeline). Built and verified on Linux, and now
+also confirmed built and running end to end on a real Windows machine
+(MSVC + vcpkg) after several rounds of real-user build fixes -- see the
+"Windows port" entry below. macOS hasn't been attempted yet (see Known
+limitations).
 
 ## Project layout
 
@@ -919,6 +922,367 @@ the rendered preview, not just that it compiles), then clicked the real
 **Reset to Defaults** button and confirmed the screenshot came back
 byte-identical to the original default state.
 
+## Windows port (source-level; now confirmed build-tested on Windows)
+
+Scoped deliberately: this sandbox is Linux-only, with no Windows machine,
+no MSVC, and no prebuilt Windows Qt6/OpenCV/FFmpeg/CFITSIO/FFTW3/libtiff
+packages available to it (cross-compiling all of those for MinGW from
+source was considered and rejected as a multi-hour, failure-prone
+undertaking with no way to test the result on real Windows anyway). So
+this is a source-and-build-system port, verified as far as this
+environment allows -- every change was checked against a real rebuild +
+`ctest` run on Linux to confirm nothing regressed there -- plus a Windows
+code path written using only well-established, standard CMake/MSVC
+mechanisms, but genuinely **not** verified against a live Windows/vcpkg
+build. Treat every claim below at that confidence level, not as "tested."
+
+**The application source needed almost nothing.** A grep for the usual
+POSIX portability offenders (`unistd.h`, `sys/*.h`, raw `mmap`/`fork`,
+hardcoded `/proc`, `/tmp`, `/usr` paths) turned up exactly one hit outside
+the build system, and it's in a non-shipped diagnostic, not the app itself
+(see below). Everything else already goes through Qt's own cross-platform
+file/path APIs.
+
+**What actually changed, in `CMakeLists.txt`:**
+- OpenCV and libtiff switched from `pkg_check_modules` to plain
+  `find_package(OpenCV REQUIRED)` / `find_package(TIFF REQUIRED)` --
+  OpenCV ships its own CMake config package on every platform it's
+  installed from (apt, vcpkg, or the official Windows SDK build), and
+  CMake itself ships a builtin `FindTIFF.cmake` module, so both resolve
+  identically cross-platform with no OS branching needed at all. Verified
+  this doesn't regress Linux: reconfigured and rebuilt from clean, `ctest`
+  still 3/3. (Note the variable-name change this forced: pkg_check_modules
+  gives `OPENCV_INCLUDE_DIRS`/`OPENCV_LIBRARIES`, all-caps;
+  `find_package(OpenCV)` gives `OpenCV_INCLUDE_DIRS`/`OpenCV_LIBS`,
+  mixed-case and LIBS not LIBRARIES -- easy to typo, confirmed the actual
+  names empirically against this repo's installed OpenCV rather than
+  assuming them.)
+- FFmpeg (avformat/avcodec/avutil/swscale) and cfitsio/fftw3 have no CMake
+  config package on any platform this project has access to, so Linux
+  keeps using pkg-config exactly as before (unchanged, still what `ctest`
+  exercises), gated behind `if(NOT WIN32)`. The `if(WIN32)` branch instead
+  uses plain `find_path()`/`find_library()` against `CMAKE_PREFIX_PATH` --
+  deliberately not a hand-written `Findcfitsio.cmake`-style module
+  guessing at vcpkg's internal target names (`unofficial::cfitsio::...` or
+  similar), since there was no way to confirm those names without a real
+  vcpkg install to inspect. `find_path`/`find_library` is exactly the
+  mechanism vcpkg's own toolchain file is designed to satisfy for any port
+  without a CMake config package, so it should work regardless of the
+  port's internal target naming -- but "should" is doing real work in that
+  sentence until someone actually runs it.
+- `-Wall -Wextra` (unconditional before) now goes through a
+  `LS_WARN_FLAGS` variable that's empty under MSVC -- `cl.exe` doesn't
+  understand GCC-style flags and errors out on them rather than ignoring
+  them.
+- `NOMINMAX` and `WIN32_LEAN_AND_MEAN` are defined project-wide under
+  `if(WIN32)`. This one's a known, well-documented class of failure, not a
+  guess: `<windows.h>` -- pulled in transitively by Qt or by FFmpeg/cfitsio
+  headers -- `#define`s `min`/`max` as macros, which breaks essentially
+  every `std::min`/`std::max`/`std::clamp` call in `ImageBuffer.h` and most
+  of `proc/` unless this is set first.
+- `ftys.exe` gets `WIN32_EXECUTABLE TRUE` (no console window behind the
+  GUI) and a real icon via a new `assets/ftys.rc` + `assets/ftys.ico`
+  (generated from the existing `assets/ftys_logo.png` with ImageMagick's
+  `convert -define icon:auto-resize=256,128,64,48,32,16`, then verified
+  with `identify` that all six resolutions actually landed in the .ico)
+  -- both added to the `ftys` target's sources only `if(WIN32)`, so
+  Linux/macOS are untouched and still get the icon the way they always
+  did, via the Qt resource file.
+
+**New `vcpkg.json` manifest** in the repo root lists `opencv4`, `ffmpeg`
+(with the `avcodec`/`avformat`/`swscale` features explicitly requested),
+`cfitsio`, `fftw3`, and `tiff` -- deliberately *not* Qt6 itself, since
+vcpkg's own Qt port builds Qt from source (slow, and known to be fragile
+across vcpkg versions); the README instead points at the official Qt
+Online Installer for Qt6 and vcpkg only for the plain C/C++ libraries.
+Port names weren't independently confirmed against a live `vcpkg search`
+(no network access to vcpkg's registry from this sandbox) -- `opencv4` in
+particular is worth double-checking, since vcpkg has renamed its OpenCV
+port before.
+
+**`tests/manual_pipeline_run.cpp`** (a non-shipped diagnostic, not part of
+the app or of `ctest`) was the one actual POSIX-ism found: its per-stage
+`VmRSS` memory reporting read `/proc/self/status` directly. Given a
+`GetProcessMemoryInfo()`-based Windows branch (`psapi.h`, linked via a new
+`if(WIN32) target_link_libraries(... psapi)` in `tests/CMakeLists.txt`)
+since it's shipped in the source tree and cheap to make portable too, even
+though it isn't part of the port's real scope. Confirmed the `#else`
+(Linux) branch still compiles and links unchanged.
+
+**What to check first if a real Windows build attempt fails:** in rough
+order of how likely each is to be the actual problem --
+1. `vcpkg install --triplet x64-windows` fails with "requires a list of
+   packages... classic mode" -- **confirmed by an actual user attempt**,
+   the first real Windows-side signal on this port. Cause: vcpkg only
+   activates manifest mode (reading `vcpkg.json` automatically) when
+   `vcpkg.json` is in the *current working directory* -- running the
+   command from inside vcpkg's own cloned folder, rather than `cd`-ing
+   into the FTYS project directory first, leaves vcpkg unable to find it
+   and falls back to classic mode, which then correctly complains it has
+   no package names on the command line. Fixed the README's step-by-step
+   to `cd` into the FTYS project directory before invoking
+   `<path-to-vcpkg>\vcpkg install`, rather than showing the clone/
+   bootstrap/install commands as one undifferentiated block that could be
+   (and was) run entirely from within the vcpkg folder.
+2. A vcpkg port name or feature flag above has changed upstream (`vcpkg
+   search <name>` shows the current name).
+3. `find_path`/`find_library` for FFmpeg/cfitsio/fftw3 came back empty --
+   almost always `CMAKE_TOOLCHAIN_FILE` wasn't passed, or was passed after
+   `project()` took effect (it must be a `-D` on the `cmake` command line,
+   not set inside `CMakeLists.txt`).
+4. A vcpkg port's actual header/library file names differ from the
+   plain, upstream-standard names guessed here (`avformat`, `cfitsio`,
+   `fftw3` as the base library names) -- unlikely for these particular
+   libraries since vcpkg deliberately keeps them close to upstream, but
+   not something this environment could confirm directly.
+5. Qt6's CMake config package not found -- `CMAKE_PREFIX_PATH` needs to
+   point at the specific Qt6 kit directory (e.g.
+   `C:\Qt\6.7.0\msvc2019_64` on older Qt 6, or `C:\Qt\6.11.0\msvc2022_64`
+   on Qt 6.8+), not just `C:\Qt`, and the compiler suffix itself changed
+   with Qt 6.8 -- see the fifth real user signal below.
+
+**`vcpkg install` (specifically FFmpeg) is very slow -- expected, not a
+sign of a stuck build.** Second real user signal on this port: a build
+sitting at "Building ffmpeg for Release" then "Building ffmpeg for Debug"
+for a long time is working as intended, just slowly. Two compounding
+reasons, neither fixable from this project's side: FFmpeg is the one
+dependency here vcpkg can't grab as a prebuilt binary, so it compiles from
+source through its own `./configure`+`make` build under vcpkg's bundled
+MSYS2/bash rather than a native MSVC/CMake build (slower on Windows on its
+own), and it includes a large default codec/format list regardless of
+which vcpkg *features* are requested (this project's `avcodec`/`avformat`/
+`swscale` features only gate optional external libraries, not FFmpeg's own
+already-large defaults). What *is* fixable: the plain `x64-windows`
+triplet builds both Debug and Release back-to-back, roughly doubling
+every compiled-from-source port's time, for a Debug configuration this
+project never uses. Switched the README's recommended triplet to the
+community `x64-windows-release` triplet (Release only) and added the
+matching `-DVCPKG_TARGET_TRIPLET=x64-windows-release` to the CMake
+configure step -- omitting that second flag while having installed under
+the `-release` triplet is its own failure mode: CMake would look for
+packages under `vcpkg_installed\x64-windows\` while they actually landed
+under `vcpkg_installed\x64-windows-release\`, and every `find_path`/
+`find_library` call from item 3 above comes back empty.
+
+**`'cmake' is not recognized...`** Third real user signal: the README
+never actually told anyone to install a C++ compiler or CMake itself
+before jumping straight into the Qt/vcpkg steps -- a real gap, not
+something a user did wrong. Fixed by adding an explicit first step:
+install Visual Studio with the "Desktop development with C++" workload
+(gives both the MSVC compiler and a bundled CMake) and, critically, run
+every subsequent step from the **Developer Command Prompt for VS** rather
+than a plain `cmd`/PowerShell window -- that prompt is what puts
+`cmake.exe` and `cl.exe` on `PATH`; neither is there in an ordinary
+terminal even with Visual Studio fully installed. Also noted the
+standalone cmake.org installer as an alternative, since not everyone
+building this will want the full Visual Studio IDE.
+
+**`Could not find toolchain file: "C:\path\to\vcpkg\scripts\buildsystems\vcpkg.cmake"`**
+Fourth real user signal: this one wasn't a bug in the build at all -- the
+user had copy-pasted the CMake configure command's example straight out
+of the README, literally including the placeholder text `C:\path\to\vcpkg`,
+instead of substituting their own vcpkg path. Reviewing the surrounding
+text made clear why: the placeholders looked like plausible real paths
+(`C:\path\to\vcpkg\...`, `C:\Qt\6.x.x\msvc2019_64`), so nothing marked them
+as "replace this" rather than "this is what to type." Fixed by switching
+every Windows build placeholder to unmistakable bracketed tokens
+(`<PATH-TO-VCPKG>`, `<PATH-TO-QT-KIT>`, `<PATH-TO-YOUR-FTYS-PROJECT-FOLDER>`,
+`<SOME-FOLDER-OF-YOUR-CHOOSING>`) plus an explicit sentence ahead of the
+configure command stating outright that those two tokens are not real
+paths. Reviewing the same section surfaced two further latent bugs, both
+fixed in the same pass even though this particular user hadn't hit them
+yet:
+
+- Step 5 (copying DLLs next to `ftys.exe`) referenced
+  `vcpkg\installed\x64-windows-release\bin` -- vcpkg's *classic-mode*
+  install location, inside vcpkg's own cloned folder. But step 3 has the
+  user run `vcpkg install` from the *project* directory, which is
+  manifest mode (triggered by `vcpkg.json` living there), and manifest
+  mode installs into `vcpkg_installed\<triplet>\` next to `vcpkg.json` --
+  i.e. inside the FTYS project folder, not inside vcpkg's. Confirmed
+  against this same user's own pasted build log, which showed paths like
+  `C:/Users/PC/Documents/FTYS/vcpkg_installed/x64-windows/debug/lib` --
+  clearly under the project root. Fixed step 5 to point at the project's
+  own `vcpkg_installed\x64-windows-release\bin`.
+- Step 3's example paths (`C:\Users\PC\Documents\GitHub` for vcpkg,
+  `...\GitHub\FTYS` for the project) assumed a sibling-folder layout and
+  used a relative `..\vcpkg\vcpkg install` invocation that depends on it.
+  This user's actual FTYS folder is `C:\Users\PC\Documents\FTYS` -- not
+  under `GitHub` at all, and not a sibling of vcpkg (`...\GitHub\vcpkg`)
+  -- so that relative path would never have resolved for them even if
+  they'd substituted correctly. Rewrote step 3 with generic placeholder
+  tokens and switched to always invoking vcpkg by its full absolute path,
+  since there's no reason vcpkg and this project need to be siblings.
+
+**`Could not find a package configuration file provided by "Qt6"`** Fifth
+real user signal: after fixing the path substitution above, this user hit
+Qt6 not resolving even with a real, correctly-typed
+`-DCMAKE_PREFIX_PATH=C:\Qt\6.11.2\msvc2019_64`. The path itself was the
+bug this time, not a copy-paste mistake: that folder doesn't exist on
+their machine. Confirmed via a web search of Qt's own documentation that
+starting with Qt 6.8, Qt's prebuilt Windows binaries switched from an
+MSVC 2019 build to an MSVC 2022 build (Qt's blog: "the upcoming Qt 6.8
+will have packages for Windows built with MSVC 2022 only, and MSVC 2019
+ones will be discontinued in binary packages"), and the installer's own
+package id for 6.11.2 is `qt.qt6.6112.win64_msvc2022_64` -- so the kit
+folder on disk is `msvc2022_64`, not `msvc2019_64`, for any Qt version
+from 6.8 onward. This user is on 6.11.2, well past that cutoff. The
+README's own example path (`C:\Qt\6.7.2\msvc2019_64`) was written before
+this was checked and is now actively wrong advice for anyone installing a
+current Qt version -- it wasn't just an unlikely edge case flagged as
+"can't confirm," it was stale information from an older Qt release
+presented as a plausible example. Fixed by rewriting the example to show
+both cases (`msvc2019_64` on Qt releases before 6.8, `msvc2022_64` on
+6.8+) with the reason for the split stated directly, and hardening the
+instruction from "check what's there rather than guessing the version
+number" to also cover not guessing the compiler suffix -- open
+`C:\Qt\<version>\` and use whatever single folder is actually there.
+
+**Real compiler errors, not doc/path issues -- the first actual source bugs
+this port has hit.** Sixth real user signal: with the path issues above
+resolved, MSVC got far enough to actually compile the codebase, and found
+two genuine portability bugs that GCC/libstdc++ on Linux had been masking:
+
+- `test_proc.cpp` (and, once grepped for the same pattern, seven other
+  files: `tests/test_io.cpp`, `tests/export_validation.cpp`, and
+  `src/io/SerReader.cpp`/`FitsReader.cpp`/`AviReader.cpp`/
+  `FrameSourceFactory.cpp`/`ImageWriter.cpp`) use `std::string` and/or
+  `std::to_string` without ever including `<string>` directly -- they
+  compiled on Linux only because some other standard header they *do*
+  include (`<random>`, `<fstream>`, `<algorithm>`, `<stdexcept>`, `<cstring>`,
+  etc.) happens to transitively pull in `<string>` under libstdc++.
+  MSVC's STL doesn't guarantee that same transitive chain -- concretely,
+  its `<random>` does not drag in `<string>` -- so `std::to_string` came
+  back as `error C2039: 'to_string': is not a member of 'std'`. (The
+  header files for these same readers were already fine: they all go
+  through `core/FrameSource.h`, which does `#include <string>` itself, so
+  including *our own* headers was always going to be reliable regardless
+  of platform -- it's specifically relying on some *other* library's
+  transitive includes that isn't.) Fixed by adding an explicit
+  `#include <string>` to all eight files rather than only the one the
+  user's compiler happened to reach first -- this was a real bug in the
+  actual application source (the `io` readers are compiled into `ftys.exe`
+  itself, not just the test binaries), so it would have broken the real
+  Windows build even after every test passed to compile.
+- Separately, `wavelet_diagnostic.cpp` (a Qt-linked manual test target,
+  same as the other Qt-linked targets) hit
+  `error C1189: "Qt requires a C++17 compiler, and a suitable value for
+  __cplusplus. On MSVC, you must pass the /Zc:__cplusplus option to the
+  compiler."` even though the project already sets
+  `CMAKE_CXX_STANDARD 17`. Root cause: MSVC's `/std:c++17` flag (which is
+  what `CMAKE_CXX_STANDARD 17` translates to under MSVC) does not, on its
+  own, make the `__cplusplus` preprocessor macro report `201703L` -- MSVC
+  leaves that macro at the ancient `199711L` by default for backward
+  compatibility with old code that branches on it, and only the separate
+  `/Zc:__cplusplus` flag opts a translation unit into reporting the real
+  value. Qt6's `qcompilerdetection.h` checks `__cplusplus` directly and
+  hard-errors if it looks pre-C++17, regardless of what standard the
+  compiler is actually using. GCC/Clang have no equivalent gap (their
+  `__cplusplus` has always been accurate), which is why this never showed
+  up building on Linux. Fixed by adding `add_compile_options(/Zc:__cplusplus)`
+  under a top-level `if(MSVC)` guard in `CMakeLists.txt`, ahead of every
+  target -- a no-op on Linux/macOS, and it fixes every Qt-linked target at
+  once (`ftys`, `test_integration`, `wavelet_diagnostic`, `inspector_verify`,
+  `export_validation`, `manual_pipeline_run`), not just the one the log
+  happened to show failing.
+
+Both fixes were verified with a full clean Linux rebuild + `ctest` (3/3
+passing) before repackaging, same as every other change in this log --
+that only confirms neither fix regressed the Linux build, since the
+`/Zc:__cplusplus` line is a no-op outside MSVC and `<string>` was always
+implicitly available on Linux; the actual MSVC compile still can't be
+verified without a Windows machine.
+
+**`On MSVC you must pass the /permissive- option to the compiler` +
+cascading `QString`/template errors, on every Qt-linked file.** Seventh
+real user signal: after the `/Zc:__cplusplus` fix, MSVC got past that
+check and immediately hit a second, similarly worded hard requirement
+from the same Qt header (`qcompilerdetection.h`): Qt6's headers detect
+`cl.exe` and static-assert that `/permissive-` must be passed, and
+without it every file that includes practically anything from QtCore
+fails with cascading, hard-to-read template errors (`QString`: an
+undefined class is not allowed as an argument to compiler intrinsic type
+trait, recursive alias declaration in the `<=>`-comparison helpers,
+etc.) -- all downstream noise from the same missing flag, not separate
+bugs. `/permissive-` switches `cl.exe` into standards-conformant parsing
+mode, which Qt6's more template-heavy headers assume; it's a distinct
+flag from `/Zc:__cplusplus` (one fixes what `__cplusplus` reports, the
+other fixes how the parser actually behaves) and MSVC requires both
+independently for Qt6. Fixed the same way as the previous flag: added
+`/permissive-` to the existing `if(MSVC) add_compile_options(...)` block
+in `CMakeLists.txt` -- a no-op on GCC/Clang, which parse conformantly by
+default.
+
+Separately, and more importantly: every one of this user's error paths
+pointed at `C:\Qt\6.11.2\mingw_64\include\...` -- **the MinGW-built Qt
+kit**, not an MSVC-built one. This matters beyond just the compiler
+flags above: this project builds vcpkg's OpenCV/FFmpeg/etc. and FTYS
+itself with MSVC (`cl.exe`), and a MinGW-built Qt cannot be linked into
+an MSVC-built program at all -- MinGW (GCC) and MSVC use incompatible
+C++ ABIs (name mangling, exception handling, the STL's own object
+layout), so even a fully successful compile of every Qt-including file
+would still fail at the link step against `mingw_64`'s import libraries.
+The `/permissive-` static-assert firing at all regardless of which kit's
+headers were in use is what surfaced this -- the fix above makes the
+compiler-detection check pass, but doesn't and can't fix the underlying
+kit mismatch. This user appears to have only ever installed Qt's MinGW
+component (probably because it's the one some Qt installer flows check
+by default), never the MSVC one. Fixed by rewriting README step 2 to
+explicitly say to check "MSVC 2022 64-bit" during the Qt Online
+Installer's component selection -- not "MinGW 64-bit" -- with the ABI
+mismatch explained inline so a future user understands *why* the
+distinction matters rather than just being told which box to tick, plus
+a note that they can add the MSVC component alongside an existing MinGW
+one via the Qt Maintenance Tool without needing to remove anything.
+Step 4's Qt-kit-path guidance was also tightened to say explicitly to
+pick whichever folder starts with `msvc`, not `mingw_64`, if both exist
+side by side.
+
+Verified with the same clean Linux rebuild + `ctest` discipline as every
+other round (3/3 passing) -- `/permissive-` is a no-op outside MSVC, so
+this doesn't change anything checkable on Linux; the kit-mismatch issue
+is a Windows/Qt-installer concern this sandbox has no way to reproduce
+at all, so that part rests on general MSVC/MinGW ABI-incompatibility
+being well-established rather than on anything testable here.
+
+**"Where is windeployqt.exe?"** Eighth real user signal, and the first
+one that isn't a build failure -- this user got all the way through
+compiling and linking (the `/permissive-` + MSVC-Qt-kit fixes above
+evidently worked) and reached step 5's deployment instructions, which
+said to "run Qt's `windeployqt.exe`" without ever saying where it lives.
+It ships inside the Qt kit itself, at `<kit>\bin\windeployqt.exe`, and
+isn't on `PATH` by default. Fixed step 5 to spell out the full path using
+the same `<PATH-TO-QT-KIT>` token already introduced in step 4, plus a
+concrete example and the exact invocation.
+
+**The Windows port is confirmed working end to end** -- this same user
+reported `ftys.exe` actually running successfully, then asked what
+libraries it needs to run. That's a real milestone worth recording
+plainly: every fix logged above (the eight "real user signal" items,
+covering vcpkg manifest mode, FFmpeg build time, missing prerequisites,
+placeholder paths, the Qt kit folder rename, the missing `<string>`
+includes, `/Zc:__cplusplus`/`/permissive-`, and the MinGW-vs-MSVC Qt kit
+mismatch) added up to an actual working build on a real machine, not just
+a plausible-looking one. Updated the top-of-file Status section and the
+README's Windows section/FAQ to say so instead of "not build-tested,"
+now that it's been verified for real rather than only reasoned through.
+
+Ninth real user signal, and not a bug this time: "what libraries are
+needed to run ftys.exe?" surfaced one real gap in step 5 that hadn't
+come up yet because nobody had gotten this far before -- the
+`windeployqt.exe` + `vcpkg_installed\...\bin` instructions were already
+right, but the doc never mentioned the Microsoft Visual C++
+Redistributable. This project links the MSVC runtime dynamically (the
+CMake+MSVC default), so `ftys.exe` needs `vcruntime140.dll`/
+`msvcp140.dll`/etc. from that redistributable on any machine that
+doesn't already have Visual Studio or its Build Tools installed --
+irrelevant on the developer's own machine (which has it via Visual
+Studio already), but a real problem for anyone they hand the exe to.
+Fixed by adding that to step 5, along with `windeployqt.exe`'s
+`--compiler-runtime` flag, which bundles those same DLLs automatically.
+
 ## Next steps
 
-1. Port to Windows and macOS (vcpkg/Conan for dependencies, CI builds).
+1. Do a real macOS port (this environment has no macOS machine, so it'll
+   need the same kind of source-level-first, then real-user-verified
+   loop that got the Windows port working).

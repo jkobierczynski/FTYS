@@ -14,13 +14,29 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#else
 #include <fstream>
 #include <sstream>
-#include <string>
+#endif
 
 namespace {
 
+// Current resident set size, in KB -- used only for this diagnostic's own
+// per-stage memory reporting, not by the app itself. /proc/self/status is
+// Linux-specific; GetProcessMemoryInfo is the equivalent on Windows.
 long vmRssKb() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<long>(pmc.WorkingSetSize / 1024);
+    }
+    return -1;
+#else
     std::ifstream f("/proc/self/status");
     std::string line;
     while (std::getline(f, line)) {
@@ -32,6 +48,7 @@ long vmRssKb() {
         }
     }
     return -1;
+#endif
 }
 
 void reportMem(const char* stage) {

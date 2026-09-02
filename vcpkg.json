@@ -1,0 +1,15 @@
+{
+  "name": "ftys",
+  "version": "0.1.0",
+  "description": "FTYS -- Focus Through Your Seeing: a lucky-imaging stacking app for planets, the Moon, and the Sun.",
+  "dependencies": [
+    "opencv4",
+    {
+      "name": "ffmpeg",
+      "features": ["avcodec", "avformat", "swscale"]
+    },
+    "cfitsio",
+    "fftw3",
+    "tiff"
+  ]
+}
