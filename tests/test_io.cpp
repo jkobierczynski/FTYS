@@ -138,7 +138,20 @@ std::string writeSyntheticAvi(const std::string& path) {
         std::vector<uint8_t> buf;
         renderDisk(buf, W, H, W / 2.0 + i * 0.7, H / 2.0 - i * 0.4, 6.0);
         av_frame_make_writable(frame);
-        std::memcpy(frame->data[0], buf.data(), buf.size());
+        // frame->linesize[0] is NOT guaranteed to equal W: av_frame_get_buffer's
+        // align=0 picks an "automatic" alignment chosen internally by libavutil
+        // (CPU SIMD capability, codec requirements), which is a build/platform
+        // detail, not something this fixture controls. A flat memcpy of `buf`
+        // (tightly packed, stride == W) into frame->data[0] is only correct
+        // when linesize[0] happens to equal W; whenever the destination has
+        // row padding, that shifts every row after the first, corrupting the
+        // whole image. Copy row-by-row using the real stride instead. First
+        // hit for real in CI, where linesize[0] came out wider than W (this
+        // sandbox's FFmpeg build happens to pick linesize[0] == W == 32 for
+        // this size, which is exactly why the bug didn't show up here) --
+        // see docs/DEVELOPMENT.md.
+        for (int y = 0; y < H; ++y)
+            std::memcpy(frame->data[0] + static_cast<size_t>(y) * frame->linesize[0], buf.data() + static_cast<size_t>(y) * W, W);
         frame->pts = i;
 
         AVPacket* pkt = av_packet_alloc();

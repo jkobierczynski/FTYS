@@ -1455,6 +1455,56 @@ this sandbox afterward -- all three tests still pass on Linux
 portable-path helper didn't regress anything here; the real test of the
 Windows fix is the next CI run.
 
+**Sixth CI attempt: the `/tmp`-path crash is gone -- `test_io` no longer
+aborts, it now runs to completion and reports a real, specific
+failure:** `FAIL: AVI frame 0 center pixel is bright` (every other
+check, including SER and FITS round-trips, passed). `test_integration`
+also failed, but by timing out at 20.15s -- suspiciously close to its
+hardcoded 20000ms watchdog, not a crash of any kind.
+
+For the AVI failure: `AviReader::readFrame()` already reads decoded
+frames through `sws_scale()`, which respects `AVFrame::linesize`
+properly, so the bug had to be on the write side. `writeSyntheticAvi()`
+allocates its encode frame with `av_frame_get_buffer(frame, 0)` --
+align `0` meaning "automatic," i.e. libavutil picks the row stride
+itself based on internal heuristics (CPU SIMD capability, codec
+requirements) that are a build/platform detail, not something this
+fixture controls. It then filled that frame with a single flat
+`memcpy(frame->data[0], buf.data(), buf.size())`, silently assuming
+`frame->linesize[0] == W`. FFmpeg's own `AVFrame` docs are explicit
+that this isn't guaranteed -- linesize can exceed width for alignment
+padding, and callers must use the real stride, never assume packed
+rows. A quick local probe confirmed why this never showed up here:
+this sandbox's FFmpeg build happens to pick `linesize[0] == 32` for a
+32-pixel-wide `GRAY8` frame (no padding), so the flat memcpy was
+accidentally correct in this environment; evidently CI's FFmpeg build
+(vcpkg, MSVC, a different CPU baseline) picks a wider stride, and every
+row after the first ends up shifted -- corrupting the whole image, not
+just frame 0. Frame 0 is just the only frame this test actually
+checks pixel content for (frame 2's check only verifies width/height),
+so it was the only one positioned to catch it. Fixed by copying
+row-by-row using `frame->linesize[0]` as the destination stride
+instead of one flat memcpy.
+
+For the timeout: 20000ms was tuned against this sandbox's own Linux
+run, where the full pipeline finishes in well under a second for this
+tiny synthetic sequence -- it had no real margin for a slower or more
+loaded CI runner, and landing at 20.15s (not instant failure, not a
+hang reported by any stage) points at the watchdog itself being too
+tight rather than a genuine deadlock. Widened to 60000ms. Left in
+place, and worth relying on if this recurs: `test_integration.cpp`
+already logs a `qInfo()` line at every pipeline stage transition
+(`sequenceOpened`, `qualityDone`, `selectionChanged`, `alignDone`,
+`stackDone`, `sharpenDone`, `colorDone`) -- if it times out again even
+at 60s, whichever of those lines is last in the CI log pinpoints
+exactly which stage never returned, straight from the log, no
+guessing required.
+
+Rebuilt clean and reran the full suite in this sandbox afterward --
+`test_io`, `test_proc`, `test_integration` all still pass on Linux
+(100%), confirming neither fix regressed anything here; as with every
+Windows-specific fix so far, the real test is the next CI run.
+
 ## Next steps
 
 1. Do a real macOS port (this environment has no macOS machine, so it'll
