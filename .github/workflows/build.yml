@@ -95,10 +95,21 @@ jobs:
       # cannot be linked into an MSVC-built program (incompatible C++
       # ABIs). See docs/DEVELOPMENT.md's sixth/seventh real-user-signal
       # entries for exactly what goes wrong if this ever regresses.
+      #
+      # Deliberately NOT 6.11.x here (even though that's what's confirmed
+      # working on the maintainer's own machine): Qt restructured its
+      # download-repo folder layout starting at 6.11, and the aqtinstall
+      # tool this action uses to fetch Qt hasn't shipped a stable PyPI
+      # release with support for that new layout yet (only an unreleased
+      # dev build has the fix -- miurahr/aqtinstall#959/#1000). Pinning to
+      # 6.10 instead sidesteps that entirely; there's nothing 6.11-specific
+      # in this project's code, so any recent Qt6 release builds the same
+      # app. Bump this back to a 6.11.x/6.12.x wildcard once aqtinstall
+      # cuts a stable release with that support.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.11.2'
+          version: '6.10.*'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
