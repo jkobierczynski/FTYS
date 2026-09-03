@@ -1,5 +1,6 @@
 #include "io/AviReader.h"
 
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
@@ -53,9 +54,25 @@ AviReader::AviReader(const std::string& path) : FrameSourceBase(path) {
 
     // Grayscale source codecs (Y800/Y8/GRAY8 style) decode straight to a
     // single-component pixel format; anything else we normalize to RGB24.
+    // PAL8's single component is a palette INDEX, not a sample value, but
+    // it still reports nb_components == 1 -- treating it as mono_ here is
+    // fine and intentional, since the actual color is resolved through
+    // palette_ below before sws_scale ever sees the index bytes.
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(codecCtx_->pix_fmt);
     mono_ = desc && desc->nb_components == 1;
     format_ = mono_ ? PixelFormat::Mono8 : PixelFormat::RGB24;
+
+    // Copy out the AVI's global color table now, from position-independent
+    // stream metadata, rather than relying on the packet-level side data /
+    // decoder-cached palette that readFrame()'s seek+flush destroys -- see
+    // the class comment in AviReader.h for why.
+    isPal8_ = (codecCtx_->pix_fmt == AV_PIX_FMT_PAL8);
+    if (isPal8_ && codecCtx_->extradata && codecCtx_->extradata_size >= static_cast<int>(256 * sizeof(uint32_t))) {
+        palette_.resize(256);
+        std::memcpy(palette_.data(), codecCtx_->extradata, 256 * sizeof(uint32_t));
+    } else if (isPal8_) {
+        throw std::runtime_error("AviReader: PAL8 stream in '" + path + "' has no palette in stream metadata");
+    }
 
     scanFrames();
 }
@@ -128,6 +145,15 @@ RawFrame AviReader::readFrame(size_t index) {
             int64_t fpts = (frame->best_effort_timestamp != AV_NOPTS_VALUE) ? frame->best_effort_timestamp
                                                                              : frame->pts;
             if (fpts >= targetPts) {
+                // Force our own known-good palette onto this frame rather
+                // than trust whatever (possibly empty, post-seek) palette
+                // the decoder itself attached -- see the class comment in
+                // AviReader.h. data[1]/linesize[1] is exactly where
+                // sws_scale expects to find a PAL8 frame's color table.
+                if (isPal8_) {
+                    frame->data[1] = reinterpret_cast<uint8_t*>(palette_.data());
+                    frame->linesize[1] = 0;
+                }
                 AVPixelFormat dstFmt = mono_ ? AV_PIX_FMT_GRAY8 : AV_PIX_FMT_RGB24;
                 if (!swsCtx_) {
                     swsCtx_ = sws_getContext(width_, height_, static_cast<AVPixelFormat>(frame->format),

@@ -184,6 +184,87 @@ std::string writeSyntheticAvi(const std::string& path) {
     return path;
 }
 
+// A real user reported some AVI captures loading as a fully dark movie --
+// tracked down to PAL8 (8-bit indexed/palette) AVI streams: FFmpeg delivers
+// the file's global color table as packet-level side data attached to the
+// first cold read of the stream, and AviReader's own scanFrames() pass
+// already consumes that read before readFrame() gets to it. See
+// AviReader.h/.cpp and docs/DEVELOPMENT.md for the full diagnosis. This
+// writes a real PAL8 AVI with a deliberately INVERTED palette -- background
+// index (10) -> a bright color, disk index (220) -> a dark color, the
+// opposite of what the raw index bytes alone would suggest -- so the test
+// can only pass if the palette is genuinely being resolved, not merely
+// present.
+std::string writeSyntheticAviPal8(const std::string& path) {
+    auto setPalette = [](AVFrame* f) {
+        uint32_t* pal = reinterpret_cast<uint32_t*>(f->data[1]);
+        for (int i = 0; i < 256; ++i) pal[i] = 0xFF141414u; // default: dark
+        pal[10] = 0xFFE6E6E6u;                              // background index -> bright
+        pal[220] = 0xFF0A0A0Au;                             // disk index -> dark
+    };
+
+    AVFormatContext* fmtCtx = nullptr;
+    avformat_alloc_output_context2(&fmtCtx, nullptr, "avi", path.c_str());
+    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_RAWVIDEO);
+    AVStream* stream = avformat_new_stream(fmtCtx, nullptr);
+    AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
+    codecCtx->width = W;
+    codecCtx->height = H;
+    codecCtx->pix_fmt = AV_PIX_FMT_PAL8;
+    codecCtx->time_base = {1, 25};
+    stream->time_base = codecCtx->time_base;
+    avcodec_open2(codecCtx, codec, nullptr);
+    avcodec_parameters_from_context(stream->codecpar, codecCtx);
+
+    if (avio_open(&fmtCtx->pb, path.c_str(), AVIO_FLAG_WRITE) < 0)
+        throw std::runtime_error("writeSyntheticAviPal8: avio_open failed for '" + path + "'");
+    if (avformat_write_header(fmtCtx, nullptr) < 0)
+        throw std::runtime_error("writeSyntheticAviPal8: avformat_write_header failed for '" + path + "'");
+
+    AVFrame* frame = av_frame_alloc();
+    frame->format = AV_PIX_FMT_PAL8;
+    frame->width = W;
+    frame->height = H;
+    av_frame_get_buffer(frame, 0);
+
+    for (int i = 0; i < NFRAMES; ++i) {
+        std::vector<uint8_t> buf;
+        renderDisk(buf, W, H, W / 2.0 + i * 0.7, H / 2.0 - i * 0.4, 6.0);
+        av_frame_make_writable(frame);
+        for (int y = 0; y < H; ++y)
+            std::memcpy(frame->data[0] + static_cast<size_t>(y) * frame->linesize[0], buf.data() + static_cast<size_t>(y) * W, W);
+        setPalette(frame); // reassert every frame -- make_writable can reallocate data[1] too
+        frame->pts = i;
+
+        AVPacket* pkt = av_packet_alloc();
+        if (avcodec_send_frame(codecCtx, frame) == 0) {
+            while (avcodec_receive_packet(codecCtx, pkt) == 0) {
+                pkt->stream_index = stream->index;
+                av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
+                av_interleaved_write_frame(fmtCtx, pkt);
+                av_packet_unref(pkt);
+            }
+        }
+        av_packet_free(&pkt);
+    }
+    avcodec_send_frame(codecCtx, nullptr);
+    AVPacket* pkt = av_packet_alloc();
+    while (avcodec_receive_packet(codecCtx, pkt) == 0) {
+        pkt->stream_index = stream->index;
+        av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
+        av_interleaved_write_frame(fmtCtx, pkt);
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+
+    av_write_trailer(fmtCtx);
+    av_frame_free(&frame);
+    avcodec_free_context(&codecCtx);
+    avio_closep(&fmtCtx->pb);
+    avformat_free_context(fmtCtx);
+    return path;
+}
+
 void testSer() {
     std::string path = writeSyntheticSer(ls::test::tempPath("ls_test.ser"));
     auto src = ls::openFrameSource(path);
@@ -232,12 +313,31 @@ void testAvi() {
     expect(buf2.width() == W && buf2.height() == H, "AVI frame 2 decodes to correct size");
 }
 
+void testAviPal8() {
+    std::string path = writeSyntheticAviPal8(ls::test::tempPath("ls_test_pal8.avi"));
+    auto src = ls::openFrameSource(path);
+    expect(src->width() == W, "PAL8 AVI width");
+    expect(src->height() == H, "PAL8 AVI height");
+    expect(src->frameCount() == NFRAMES, "PAL8 AVI frame count");
+
+    ls::RawFrame f0 = src->readFrame(0);
+    ls::ImageBuffer buf = ls::imageBufferFromRaw(f0);
+    // Inverted palette: the disk (index 220) resolves to a DARK color and
+    // the background (index 10) resolves to BRIGHT -- the opposite of the
+    // raw index bytes, so this only passes if the palette is genuinely
+    // being applied rather than the frame reading back all-dark (the real
+    // bug) or the raw index bytes being used directly.
+    expect(buf.at(W / 2, H / 2, 0) < 0.5f, "PAL8 AVI frame 0 center (disk index) resolves through the palette to dark");
+    expect(buf.at(1, 1, 0) > 0.5f, "PAL8 AVI frame 0 corner (background index) resolves through the palette to bright");
+}
+
 } // namespace
 
 int main() {
     testSer();
     testFits();
     testAvi();
+    testAviPal8();
     if (g_failures) {
         std::cerr << g_failures << " failure(s)\n";
         return 1;

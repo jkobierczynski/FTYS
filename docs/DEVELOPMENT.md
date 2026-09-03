@@ -1554,6 +1554,101 @@ only be confirmed on Windows), so this is a logging fix aimed
 squarely at making the *next* real failure legible, not a claimed fix
 for the crash itself.
 
+**Eighth CI attempt: `test_integration` passed. The mundane explanation
+turned out to be the right one --** the next CI run (still without
+`tests/test_integration.cpp` or `tests/inspector_verify.cpp` actually
+pushed, a mismatch only caught by diffing the real GitHub commit
+against what had been delivered) reproduced the exact same ~20s,
+zero-output failure as every round before it, which made it possible
+to be sure of something that had only been suspected until then: those
+two files had silently never been pushed since the very first
+`ls::test::tempPath()` fix several rounds back, for the `/tmp`-path
+crash. Every "new" failure investigated in between -- the AVI stride
+bug (real, and fixed, but that was `test_io`, not
+`test_integration`), the 20s-timeout theory, the uncaught-exception
+theory that motivated `TestLogging.h` -- was chasing `test_integration`
+behavior that may simply have been the *original*, already-diagnosed
+`/tmp` bug the whole time, still present because its fix had never
+actually reached this file. Once both files were actually added and
+pushed (bundling the original `tempPath()` fix together with the
+`TestLogging.h` hardening, since both had accumulated in the same
+local copy), `test_integration` passed clean at 0.15s. Which of the two
+changes actually mattered can't be fully separated out after the fact
+since they landed in the same push -- but given the timeline, the
+`tempPath()` fix (never before actually deployed for this file) is the
+far more likely explanation than the exception-safety wrapper fixing a
+bug that may never have needed it. `TestLogging.h` stays in either
+way: it's a reasonable hardening on its own regardless of whether it
+was the thing that mattered here.
+
+The practical lesson, worth remembering for its own sake: when a fix
+doesn't take effect, check that the file it's in was actually pushed
+before diagnosing a new theory for the same failure.
+
+## First real user signal: PAL8 AVI captures loading fully dark
+
+With CI green and a real Mac mini in play for the macOS port, the
+project's first real usage report came in: some AVI movies (not the
+ones used to build/test so far) loaded as a completely dark, blank
+movie. `ffprobe` on the actual affected files showed `pix_fmt=pal8`
+across the board -- 8-bit palette/indexed video, where each pixel byte
+is an index into a 256-color lookup table rather than a direct
+gray/RGB sample, a format some older or simpler capture tools still
+use. Neither of the two synthetic AVI fixtures used everywhere else in
+this project's tests exercise PAL8 at all (both use plain Mono8), so
+this whole code path had never actually been tested against real data.
+
+Rather than patch on a guess, this was reproduced for real in this
+sandbox: generated an actual PAL8 AVI with `ffmpeg` (a genuine 0-255
+gray gradient, `-pix_fmt pal8 -vcodec rawvideo -f avi`), then read it
+back through the project's real `AviReader` class via a small
+standalone driver. Result: every pixel read back as 0 -- the exact
+"fully dark" bug, reproduced outside the app entirely, confirming this
+wasn't specific to whatever recorded the user's files.
+
+Diagnosis, verified step by step rather than assumed: FFmpeg exposes a
+PAL8 AVI's color table two different ways -- as `AV_PKT_DATA_PALETTE`
+side data attached to a packet, and as static, position-independent
+stream metadata (`AVCodecParameters`/`AVCodecContext::extradata`,
+populated once by `avformat_find_stream_info()`). Probing the actual
+decode confirmed the packet-side-data copy is fragile: it's only
+attached to a packet on a genuine cold read of the stream from the
+start. `AviReader::scanFrames()` already performs exactly such a cold
+read once, up front, to record every frame's pts -- consuming that
+one-time palette delivery before it's ever put to use. `readFrame(0)`
+then does its first (necessary) backward seek and
+`avcodec_flush_buffers()`, and a direct test confirmed the re-read
+packet after that seek has *no* palette side data at all, and the
+decoded frame's palette plane comes back all-zero -- meaning every
+index resolves to black, regardless of its actual value. Confirmed
+`sws_scale` itself was never the problem (a separate isolated test
+showed it correctly resolves an explicitly-supplied palette for either
+a GRAY8 or RGB24 destination) -- the palette data reaching it was
+simply empty by the time any real frame gets decoded.
+
+Fixed by not depending on that fragile, seek-sensitive delivery
+mechanism at all: `AviReader` now copies the palette out of
+`codecCtx_->extradata` once at open time (confirmed via the same
+real PAL8 file to hold the identical color table, independent of
+packet/seek position) and force-attaches its own stored copy to
+`frame->data[1]` on every decoded PAL8 frame, right before the
+`sws_scale` conversion -- regardless of whatever the decoder itself
+did or didn't cache. Verified against the real ffmpeg-generated PAL8
+gradient file afterward: the reader now reproduces the actual gradient
+instead of all zeros.
+
+Added a permanent regression test (`testAviPal8()` in `test_io.cpp`)
+rather than relying on this having been checked by hand once: it
+writes a real PAL8 AVI with a deliberately *inverted* palette (the
+fixture's usual "background" index byte maps to a bright color, its
+"disk" index byte maps to a dark color -- the opposite of what the raw
+index bytes alone would suggest), so the test can only pass if the
+palette is genuinely being resolved. Confirmed this actually catches
+the bug, not just coincidentally passing either way: temporarily
+disabling the fix and rebuilding made the new test fail exactly as
+expected, then re-enabled it and reran clean. Full suite passes in
+this sandbox (`test_io`, `test_proc`, `test_integration`, 100%).
+
 ## Next steps
 
 1. Do a real macOS port (this environment has no macOS machine, so it'll
