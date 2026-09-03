@@ -6,6 +6,8 @@
 // display needed.
 
 #include "gui/PipelineController.h"
+#include "TestTempDir.h"
+#include "TestLogging.h"
 
 #include <QCoreApplication>
 #include <QTimer>
@@ -61,7 +63,9 @@ std::string writeSyntheticSer(const std::string& path) {
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
-    std::string path = writeSyntheticSer("/tmp/ls_integration.ser");
+    ls::test::installFlushingMessageHandler();
+    qInfo() << "test_integration: starting";
+    std::string path = writeSyntheticSer(ls::test::tempPath("ls_integration.ser"));
 
     auto* controller = new ls::PipelineController(&app);
     bool ok = true;
@@ -126,20 +130,34 @@ int main(int argc, char** argv) {
 
     QObject::connect(controller, &ls::PipelineController::colorDone, [&](QImage img) {
         qInfo() << "colorDone" << img.size();
-        bool exported = controller->exportImage("/tmp/ls_integration_out.png");
+        bool exported = controller->exportImage(QString::fromStdString(ls::test::tempPath("ls_integration_out.png")));
         qInfo() << "export ok=" << exported;
         if (!exported) ok = false;
         QCoreApplication::exit(ok ? 0 : 1);
     });
 
-    QTimer::singleShot(20000, [&]() {
+    // 20s was tuned against this sandbox's Linux run (well under a second
+    // end-to-end for this tiny 10-frame synthetic sequence) and had no
+    // real margin for a slower or more loaded CI runner, so this was
+    // widened on the theory that Windows CI just needed more headroom.
+    // That theory turned out wrong: the very next CI run still failed at
+    // ~20.4s despite this 60s watchdog, and with *zero* logged output --
+    // not even the "starting" line above, let alone the per-stage ones
+    // below. That means it isn't this timer firing at all; something is
+    // killing the process outright (almost certainly an uncaught
+    // exception reaching std::terminate() from inside a Qt slot, which
+    // Qt does not catch for you) before it has a chance to log or return
+    // gracefully. installFlushingMessageHandler() above and
+    // ls::test::runEventLoop() below exist specifically to stop that from
+    // erasing the evidence next time -- see docs/DEVELOPMENT.md.
+    QTimer::singleShot(60000, [&]() {
         qWarning() << "TIMEOUT waiting for pipeline to complete";
         QCoreApplication::exit(1);
     });
 
     controller->openSequence(QString::fromStdString(path));
 
-    int rc = app.exec();
+    int rc = ls::test::runEventLoop(app);
     if (rc == 0) qInfo() << "integration test passed";
     return rc;
 }

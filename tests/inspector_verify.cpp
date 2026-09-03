@@ -12,6 +12,8 @@
 #include <QPainter>
 #include <QFont>
 #include <QDebug>
+#include <QDir>
+#include "TestLogging.h"
 
 int main(int argc, char** argv) {
     // QPainter::setFont() touches the font database, which needs at least
@@ -19,6 +21,7 @@ int main(int argc, char** argv) {
     // headless -- run with QT_QPA_PLATFORM=offscreen, no real display
     // needed.
     QGuiApplication app(argc, argv);
+    ls::test::installFlushingMessageHandler();
     if (argc < 2) { fprintf(stderr, "usage: %s <file> [keepPercent]\n", argv[0]); return 2; }
     QString path = argv[1];
     double keepPercent = argc >= 3 ? std::atof(argv[2]) : 50.0;
@@ -73,13 +76,13 @@ int main(int argc, char** argv) {
 
         int n = controller->alignedFrameCount();
         for (int pos : {0, n / 4, n / 2, n - 1}) {
-            drawAndSave(pos, false, QString("/tmp/inspector_raw_pos%1.png").arg(pos));
-            drawAndSave(pos, true, QString("/tmp/inspector_aligned_pos%1.png").arg(pos));
+            drawAndSave(pos, false, QDir(QDir::tempPath()).filePath(QString("inspector_raw_pos%1.png").arg(pos)));
+            drawAndSave(pos, true, QDir(QDir::tempPath()).filePath(QString("inspector_aligned_pos%1.png").arg(pos)));
         }
         QCoreApplication::exit(ok ? 0 : 1);
     });
 
     QTimer::singleShot(300000, [&]() { qWarning() << "TIMEOUT"; QCoreApplication::exit(1); });
     controller->openSequence(path);
-    return app.exec();
+    return ls::test::runEventLoop(app);
 }
