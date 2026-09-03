@@ -13,6 +13,7 @@
 #include "io/FitsReader.h"
 #include "core/ImageBuffer.h"
 #include "TestTempDir.h"
+#include "TestLogging.h"
 
 #include <QCoreApplication>
 #include <QTimer>
@@ -28,6 +29,7 @@
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    ls::test::installFlushingMessageHandler();
     if (argc < 2) {
         fprintf(stderr, "usage: %s <sequence file> [keepPercent]\n", argv[0]);
         return 2;
@@ -192,6 +194,6 @@ int main(int argc, char** argv) {
     });
 
     controller->openSequence(path);
-    int rc = app.exec();
+    int rc = ls::test::runEventLoop(app);
     return rc;
 }

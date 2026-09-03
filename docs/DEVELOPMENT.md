@@ -1505,6 +1505,55 @@ Rebuilt clean and reran the full suite in this sandbox afterward --
 (100%), confirming neither fix regressed anything here; as with every
 Windows-specific fix so far, the real test is the next CI run.
 
+**Seventh CI attempt: the AVI fix held (`test_io` passed clean), but
+`test_integration` failed again -- at 20.43s, despite the timeout from
+the previous entry having just been widened from 20s to 60s.** That's
+the finding, not a footnote: it disproves the "just needed more
+headroom" theory outright. If the 60s watchdog were what's firing,
+this run would have failed at ~60s, not ~20s again. Something else is
+ending the process, and `ctest --output-on-failure` showed *nothing*
+for it -- not even the `qInfo() << "sequenceOpened"` line the driver
+logs the moment the very first pipeline stage completes. A test that
+fails partway through ordinarily still leaves whatever it managed to
+log before failing; logging literally nothing points at the process
+dying hard enough to lose its own output, which is exactly what
+happens when a C++ exception reaches `std::terminate()` -- the same
+failure class as the earlier `/tmp`-path crash, just triggered from
+inside the pipeline's own asynchronously-delivered slots this time
+rather than test-fixture file I/O. Qt does not catch exceptions thrown
+from inside a slot; one thrown on a QtConcurrent worker thread and
+redelivered via a queued connection, or thrown directly in a lambda
+connected to a signal, propagates straight up through Qt's event
+dispatch and out of `QCoreApplication::exec()` -- taking down the
+process before any of the surrounding `qInfo()` calls' output is
+guaranteed to have reached the log.
+
+Rather than guess further at which specific stage throws (there's
+still no log evidence pointing at one), added a shared
+`tests/TestLogging.h` with two pieces of hardening applied to every
+Qt-event-loop-driven driver in this directory
+(`test_integration.cpp`, and proactively to `export_validation.cpp`,
+`inspector_verify.cpp`, `manual_pipeline_run.cpp`, which all share the
+identical pattern): `installFlushingMessageHandler()` installs a Qt
+message handler that writes and immediately flushes every
+`qDebug`/`qInfo`/`qWarning`/`qCritical` line, so a later hard crash can
+no longer erase the log leading up to it; `runEventLoop()` wraps
+`app.exec()` in `try`/`catch`, so an exception that reaches the event
+loop produces one clear diagnostic line naming itself instead of
+silently vanishing into an opaque non-zero exit. This doesn't fix
+whatever the underlying exception is -- there isn't enough information
+yet to know what that is -- but it guarantees the *next* CI run either
+passes or hands back the exact exception message and the last stage
+reached, instead of another silent ~20s failure.
+
+Rebuilt clean and reran the full suite in this sandbox afterward --
+`test_io`, `test_proc`, `test_integration` all still pass on Linux
+(100%); this sandbox was never able to reproduce the crash itself
+(same real-user-verification gap as always -- Windows behavior can
+only be confirmed on Windows), so this is a logging fix aimed
+squarely at making the *next* real failure legible, not a claimed fix
+for the crash itself.
+
 ## Next steps
 
 1. Do a real macOS port (this environment has no macOS machine, so it'll

@@ -12,6 +12,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QDir>
+#include "TestLogging.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -60,6 +61,7 @@ void reportMem(const char* stage) {
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    ls::test::installFlushingMessageHandler();
     if (argc < 2) {
         fprintf(stderr, "usage: %s <sequence file> [keepPercent]\n", argv[0]);
         return 2;
@@ -189,7 +191,7 @@ int main(int argc, char** argv) {
     });
 
     controller->openSequence(path);
-    int rc = app.exec();
+    int rc = ls::test::runEventLoop(app);
     qInfo() << "TOTAL TIME" << timer.elapsed() << "ms, peak reporting above";
     return rc;
 }
