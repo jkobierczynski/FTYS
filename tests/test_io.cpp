@@ -78,6 +78,61 @@ std::string writeSyntheticSer(const std::string& path) {
     return path;
 }
 
+// 16-bit-container SER (mono) with the given LittleEndian flag, pixel depth
+// and byte order of the samples actually written.
+std::string writeSer16(const std::string& path, int32_t littleEndianFlag, int32_t depth, bool bigEndianSamples,
+                       const std::vector<uint16_t>& samples) {
+    std::ofstream f(path, std::ios::binary);
+    f.write("LUCAM-RECORDER", 14);
+    writeI32LE(f, 0);                // LuID
+    writeI32LE(f, 0);                // ColorID = MONO
+    writeI32LE(f, littleEndianFlag);
+    writeI32LE(f, 4);                // width
+    writeI32LE(f, 1);                // height
+    writeI32LE(f, depth);
+    writeI32LE(f, 1);                // one frame
+    char pad40[40] = {0};
+    f.write(pad40, 40); f.write(pad40, 40); f.write(pad40, 40);
+    writeI64LE(f, 0); writeI64LE(f, 0);
+    for (uint16_t v : samples) {
+        unsigned char b[2];
+        if (bigEndianSamples) { b[0] = uint8_t(v >> 8); b[1] = uint8_t(v); }
+        else { b[0] = uint8_t(v); b[1] = uint8_t(v >> 8); }
+        f.write(reinterpret_cast<const char*>(b), 2);
+    }
+    return path;
+}
+
+std::vector<uint16_t> firstFrame16(const std::string& path) {
+    auto src = ls::openFrameSource(path);
+    ls::RawFrame fr = src->readFrame(0);
+    std::vector<uint16_t> v(fr.bytes.size() / 2);
+    std::memcpy(v.data(), fr.bytes.data(), v.size() * 2);
+    return v;
+}
+
+void testSer16() {
+    const std::vector<uint16_t> s16 = {0x0102, 0x1234, 0xABCD, 0xFFFF};
+    // LittleEndian = 0 with little-endian samples: what FireCapture, SharpCap,
+    // PIPP, SER Player and serconv write. Must be read as is.
+    expect(firstFrame16(writeSer16(ls::test::tempPath("ls_le0.ser"), 0, 16, false, s16)) == s16,
+           "SER 16-bit LittleEndian=0 read as little-endian");
+    // LittleEndian = 1: big-endian samples by the common convention.
+    expect(firstFrame16(writeSer16(ls::test::tempPath("ls_le1.ser"), 1, 16, true, s16)) == s16,
+           "SER 16-bit LittleEndian=1 read as big-endian");
+    // 12-bit data (0..4095) is scaled to the 16-bit range.
+    const std::vector<uint16_t> s12 = {0, 1, 2048, 4095};
+    auto src12 = ls::openFrameSource(writeSer16(ls::test::tempPath("ls_d12.ser"), 0, 12, false, s12));
+    expect(src12->format() == ls::PixelFormat::Mono16, "SER 12-bit opens as Mono16");
+    expect(firstFrame16(ls::test::tempPath("ls_d12.ser")) == std::vector<uint16_t>({0, 16, 32768, 65520}),
+           "SER 12-bit samples scaled to 16 bits");
+    // 14-bit data in big-endian order.
+    const std::vector<uint16_t> s14 = {1, 16383, 8192, 100};
+    expect(firstFrame16(writeSer16(ls::test::tempPath("ls_d14.ser"), 1, 14, true, s14)) ==
+               std::vector<uint16_t>({4, 65532, 32768, 400}),
+           "SER 14-bit big-endian samples scaled to 16 bits");
+}
+
 std::string writeSyntheticFits(const std::string& path) {
     std::remove(path.c_str());
     fitsfile* fptr = nullptr;
@@ -335,6 +390,7 @@ void testAviPal8() {
 
 int main() {
     testSer();
+    testSer16();
     testFits();
     testAvi();
     testAviPal8();

@@ -25,6 +25,7 @@ private:
     int planes_ = 1;            // 1 = mono/bayer, 3 = rgb/bgr
     bool swapRGBtoBGR_ = false; // ColorID 101 (BGR) needs channel swap to RGB24/48 convention
     bool littleEndianData_ = true;
+    int depthShift_ = 0;        // 16 - PixelDepth for 9-15 bit data, scaled up to the 16-bit range
     size_t frameStride_ = 0;    // bytes per frame in the file
 };
 

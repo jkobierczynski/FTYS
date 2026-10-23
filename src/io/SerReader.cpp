@@ -60,20 +60,25 @@ void SerReader::parseHeader() {
     if (!file_) throw std::runtime_error("SerReader: truncated header in '" + path_ + "'");
     if (imageWidth <= 0 || imageHeight <= 0 || frameCount <= 0)
         throw std::runtime_error("SerReader: invalid dimensions/frame count in '" + path_ + "'");
-    if (pixelDepth != 8 && pixelDepth != 16)
+    // 1-8 bits: one byte per sample; 9-16 bits: two bytes, the value in the
+    // low bits (a 12-bit camera writes 0..4095).
+    if (pixelDepth < 1 || pixelDepth > 16)
         throw std::runtime_error("SerReader: unsupported pixel depth " + std::to_string(pixelDepth));
 
     width_ = imageWidth;
     height_ = imageHeight;
     frameCount_ = static_cast<size_t>(frameCount);
-    bytesPerSample_ = (pixelDepth == 16) ? 2 : 1;
+    bytesPerSample_ = (pixelDepth > 8) ? 2 : 1;
+    // 9-15 bit data is scaled up to 16 bits (as SER Player and Siril do), so
+    // the rest of the pipeline sees the usual 16-bit range.
+    depthShift_ = (pixelDepth > 8 && pixelDepth < 16) ? 16 - pixelDepth : 0;
 
-    // NOTE: in practice most SER writers (FireCapture, SharpCap, etc.) emit
-    // little-endian 16-bit samples regardless of what this flag says, and
-    // several well-known tools historically wrote it backwards. We honor it
-    // only if it explicitly claims big-endian AND depth is 16; 8-bit data
-    // has no endianness to speak of.
-    littleEndianData_ = !(bytesPerSample_ == 2 && littleEndianFlag == 0);
+    // The specification says LittleEndian = 1 means little-endian samples,
+    // but the early writers did the opposite and everyone followed them:
+    // FireCapture, SharpCap, PIPP, Siril, AutoStakkert! and SER Player all
+    // write little-endian 16-bit data with LittleEndian = 0, and treat 1 as
+    // big-endian. Follow that de facto convention. 8-bit data has no byte order.
+    littleEndianData_ = !(bytesPerSample_ == 2 && littleEndianFlag == 1);
 
     switch (colorId) {
         case 0: planes_ = 1; format_ = (bytesPerSample_ == 2) ? PixelFormat::Mono16 : PixelFormat::Mono8; break;
@@ -118,6 +123,14 @@ RawFrame SerReader::readFrame(size_t index) {
             uint16_t v = samples[i];
             samples[i] = static_cast<uint16_t>((v >> 8) | (v << 8));
         }
+    }
+
+    if (depthShift_ > 0) {
+        uint16_t* samples = reinterpret_cast<uint16_t*>(out.bytes.data());
+        const size_t n = out.bytes.size() / 2;
+        const uint16_t mask = static_cast<uint16_t>((1u << (16 - depthShift_)) - 1u);
+        for (size_t i = 0; i < n; ++i)
+            samples[i] = static_cast<uint16_t>((samples[i] & mask) << depthShift_);
     }
 
     // BGR -> RGB channel swap, done in-place per pixel.
